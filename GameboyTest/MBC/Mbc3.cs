@@ -5,9 +5,18 @@
         private byte[][] romBanks;
         private byte[][] ramBanks;
 
+        // MBC3 State Variables
         private int currentRomBank = 1;
         private int currentRamBank = 0;
-        private bool ramEnabled = false;
+        private bool ramAndRtcEnabled = false;
+
+        // --- NEW: RTC State Variables ---
+        // -1 means no RTC selected (we are reading/writing RAM). 
+        // 0-4 corresponds to the 5 clock registers.
+        private int activeRtcRegister = -1;
+
+        // An array to hold our 5 clock values (S, M, H, DL, DH)
+        private byte[] rtcData = new byte[5];
 
         public Mbc3(byte[][] romBanks, byte[][] ramBanks)
         {
@@ -31,13 +40,22 @@
                     return romBanks[currentRomBank][offset];
                 }
             }
-            // 3. External Save RAM (0xA000 - 0xBFFF)
+            // 3. External RAM or RTC Data (0xA000 - 0xBFFF)
             else if (address >= 0xA000 && address <= 0xBFFF)
             {
-                if (ramEnabled && ramBanks != null && currentRamBank < ramBanks.Length)
+                if (ramAndRtcEnabled)
                 {
-                    int offset = address - 0xA000;
-                    return ramBanks[currentRamBank][offset];
+                    // If an RTC register is actively selected, return the clock data
+                    if (activeRtcRegister != -1)
+                    {
+                        return rtcData[activeRtcRegister];
+                    }
+                    // Otherwise, return standard Save RAM data
+                    else if (ramBanks != null && currentRamBank < ramBanks.Length)
+                    {
+                        int offset = address - 0xA000;
+                        return ramBanks[currentRamBank][offset];
+                    }
                 }
             }
 
@@ -46,27 +64,54 @@
 
         public void Write(ushort address, byte value)
         {
-            // 1. Enable/Disable RAM
+            // 1. Enable/Disable RAM and RTC
             if (address <= 0x1FFF)
             {
-                ramEnabled = (value & 0x0F) == 0x0A;
+                ramAndRtcEnabled = ((value & 0x0F) == 0x0A);
             }
             // 2. ROM Bank Select
             else if (address >= 0x2000 && address <= 0x3FFF)
             {
                 currentRomBank = value & 0x7F;
-
-                // Writing 0 still selects Bank 1 in MBC3
                 if (currentRomBank == 0) currentRomBank = 1;
             }
-            // 3. RAM Bank Select
+            // 3. RAM Bank OR RTC Register Select
             else if (address >= 0x4000 && address <= 0x5FFF)
             {
-                // Values 0x00-0x03 select a RAM bank. 
-                // (Values 0x08-0x0C would select RTC registers, which you can add later)
-                if (value <= 0x03)
+                // Values 0x00-0x07 map to physical RAM banks
+                if (value <= 0x07)
                 {
                     currentRamBank = value;
+                    activeRtcRegister = -1; // Deselect RTC, switch back to RAM
+                }
+                // Values 0x08-0x0C map to the RTC registers
+                else if (value >= 0x08 && value <= 0x0C)
+                {
+                    // Normalize 0x08-0x0C down to an array index of 0-4
+                    activeRtcRegister = value - 0x08;
+                }
+            }
+            // 4. Latch Clock Data (0x6000 - 0x7FFF)
+            else if (address >= 0x6000 && address <= 0x7FFF)
+            {
+                // To prevent the clock from ticking forward WHILE a game is trying to read it,
+                // games write 0x00 then 0x01 to this address to "freeze" the time into the registers.
+                // (You can implement the actual PC system clock hooking here later!)
+            }
+            // 5. Write to External RAM or RTC Data (0xA000 - 0xBFFF)
+            else if (address >= 0xA000 && address <= 0xBFFF)
+            {
+                if (ramAndRtcEnabled)
+                {
+                    if (activeRtcRegister != -1)
+                    {
+                        rtcData[activeRtcRegister] = value;
+                    }
+                    else if (ramBanks != null && currentRamBank < ramBanks.Length)
+                    {
+                        int offset = address - 0xA000;
+                        ramBanks[currentRamBank][offset] = value;
+                    }
                 }
             }
         }
