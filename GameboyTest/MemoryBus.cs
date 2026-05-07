@@ -8,7 +8,14 @@ namespace GameboyTest
     public class MemoryBus
     {
         private IMbc mbc;
-
+        public enum InterruptType
+        {
+            VBlank = 0,
+            LCDStat = 1,
+            Timer = 2,
+            Serial = 3,
+            Joypad = 4
+        }
         // Internal Game Boy Memory Arrays
         private byte[] vram = new byte[0x2000]; // 8KB Video RAM (0x8000 - 0x9FFF)
         private byte[] wram = new byte[0x2000]; // 8KB Working RAM (0xC000 - 0xDFFF)
@@ -128,7 +135,17 @@ namespace GameboyTest
         {
             io[address - 0xFF00] = value;
         }
+        public void RequestInterrupt(InterruptType type)
+        {
+            // 1. Read the current state of the Interrupt Flag (IF) register
+            byte iff = ReadByte(0xFF0F);
 
+            // 2. Flip the specific bit to 1 using a bitwise OR
+            iff |= (byte)(1 << (int)type);
+
+            // 3. Write it back to memory
+            WriteByte(0xFF0F, iff);
+        }
         private void InitializeHardwareRegisters()
         {
             // --- JOYPAD ---
