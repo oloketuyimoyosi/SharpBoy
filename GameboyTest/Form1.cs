@@ -117,10 +117,13 @@ namespace GameboyTest
 
                         // 1. Figure out which MBC chip to create based on the parsed header
                         IMbc activeMbc;
-
                         if (activeCartridge.MbcType == "None")
                         {
                             activeMbc = new Mbc0(activeCartridge.RomBanks);
+                        }
+                        else if (activeCartridge.MbcType == "MBC1") // Add this block!
+                        {
+                            activeMbc = new Mbc1(activeCartridge.RomBanks, activeCartridge.RamBanks);
                         }
                         else if (activeCartridge.MbcType == "MBC3")
                         {

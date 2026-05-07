@@ -10,13 +10,8 @@ namespace GameboyTest.MBC
     public class Mbc0 : IMbc
     {
         private byte[][] romBanks;
-        private bool _RamEnabled = false;
-        const ushort ROM_LOW_END = 0x3FFF;// MBC0 does not support RAM, but we include this for consistency
-        const ushort ROM_HIGH_START = 0x4000;
-        const ushort ROM_HIGH_END = 0x7FFF;
-        private byte _offset = default;
-        public byte calculated_bank = 0; 
-
+        public int calculated_bank = 0;
+        public int checker = 0;
 
 
 
@@ -44,15 +39,7 @@ namespace GameboyTest.MBC
 
         public void Write(ushort address, byte value)
         {
-            if (address <= 0x7FFF)
-            {
-                if (address <= 0x1FFF)
-                {
-                    _RamEnabled = (value & 0x0F) == 0x0A;
-                }
-                // MBC0 does not support RAM, so we ignore writes to the ROM area
-               
-            }
+
         }
     }
 }
