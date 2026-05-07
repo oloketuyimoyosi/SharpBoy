@@ -75,13 +75,25 @@ namespace GameboyTest
         // --- CPU STATE ---
         public bool IME { get; set; } // Interrupt Master Enable
         public bool Halted { get; set; }
+        public ulong TotalClockCycles { get; private set; }
 
         public CPU(MemoryBus memoryBus)
         {
             this.bus = memoryBus;
             ResetToPostBootromState();
         }
+        // Add this to your CPU state variables
 
+        // --- THE HEARTBEAT ---
+        private void Tick()
+        {
+            // Every memory access takes 1 M-Cycle, which is 4 T-Cycles
+            TotalClockCycles += 4;
+
+            // NOTE FOR LATER: This is exactly where you will sync the rest of the hardware!
+            // ppu.Step(4);
+            // timer.Step(4);
+        }
         private void ResetToPostBootromState()
         {
             // If you skip the Nintendo logo, these are the EXACT values 
@@ -99,51 +111,167 @@ namespace GameboyTest
 
         // Returns the number of T-Cycles (clock cycles) the instruction took.
         // This is crucial for syncing the audio and graphics later!
-        public int Step()
+        // Change from 'public int Step()' to 'public void Step()'
+        public void Step()
         {
             if (Halted)
             {
-                // If halted, CPU does nothing but wait for an interrupt (takes 4 cycles)
-                return 4;
+                // The CPU is asleep, but the system clock still ticks!
+                Tick();
+                return;
             }
 
-            // 1. Fetch the opcode at the current PC
+            // 1. Fetching the opcode takes 1 memory access (4 T-Cycles)
             byte opcode = ReadNextByte();
 
             // 2. Decode and Execute
-            return ExecuteOpcode(opcode);
+            ExecuteOpcode(opcode);
         }
 
         // Helper to read a byte and push the PC forward automatically
+        // Replace your old ReadNextByte with this:
         private byte ReadNextByte()
         {
+            Tick(); // Time passes while reading...
             byte value = bus.ReadByte(PC);
             PC++;
             return value;
         }
 
-        private ushort ReadNextWord()
+        // New helper for reading memory from addresses other than PC (like reading RAM)
+        private byte ReadMemory(ushort address)
         {
-            // Game Boy is Little-Endian! (Lower byte comes first)
-            byte low = ReadNextByte();
-            byte high = ReadNextByte();
-            return (ushort)((high << 8) | low);
+            Tick();
+            return bus.ReadByte(address);
         }
 
-        private int ExecuteOpcode(byte opcode)
+        // New helper for writing to memory
+        private void WriteMemory(ushort address, byte value)
+        {
+            Tick();
+            bus.WriteByte(address, value);
+        }
+
+        // ReadNextWord automatically takes 8 T-Cycles because it calls ReadNextByte twice!
+        private ushort ReadNextWord()
+        {
+            byte low = ReadNextByte();   // Ticks 4
+            byte high = ReadNextByte();  // Ticks 4
+            return (ushort)((high << 8) | low);
+        }
+        private void ExecuteOpcode(byte opcode)
         {
             switch (opcode)
             {
                 case 0x00: // NOP (No Operation)
-                    return 4; // Takes 4 T-cycles
-
+                    break ; 
+                case 0x01: // LD BC, n16
+                    BC = ReadNextWord();
+                    break;
+                case 0x11:
+                    DE = ReadNextWord();
+                    break;
+                case 0x21:
+                    HL = ReadNextWord();
+                    break;
                 case 0x31: // LD SP, d16 (Load 16-bit immediate value into SP)
                     SP = ReadNextWord();
-                    return 12;
+                    break;
+                case 0x02:
+                    WriteMemory(BC,A); // LD (BC), A
+                    break;
+                case 0x12:
+                    WriteMemory(DE, A);
+                    break;
+                case 0x22:
+                    WriteMemory(HL, A);
+                    HL++;
+                    break;
+                case 0x32:
+                    WriteMemory(HL, A);
+                    HL--;
+                    break;
+                case 0x03: // INC BC (Increment 16-bit register BC)
+                    BC++; // The 8-bit ALU needs extra time to calculate the 16-bit addition
+                    Tick();
+                    break;
+                case 0x13:
+                    DE++;
+                    Tick();
+                    break;
+                case 0x23:
+                    HL++;
+                    Tick();
+                    break;
+                case 0x33: // INC SP (Increment 16-bit Stack Pointer)
+                    SP++; // The 8-bit ALU needs extra time to calculate the 16-bit addition
+                    Tick();
+                    break;
+                case 0x04:
+                    FlagH = (B & 0x0F) == 0x0F;
+                    B++;
+                    FlagZ = (B == 0);
+                    FlagN = false;
+                    break;
+                case 0x14:
+                    FlagH = (D & 0x0F) == 0x0F;
+                    D++;
+                    FlagZ = (D == 0);
+                    FlagN = false;
+                    break;
 
+                case 0x24:
+                    FlagH = (H & 0x0F) == 0x0F;
+                    H++;
+                    FlagZ = (H == 0);
+                    FlagN = false;
+                    break;
+                case 0x34:
+                    // INC (HL) (Increment the value at the memory address pointed to by HL)
+                    byte valueAtHL = ReadMemory(HL);
+                    FlagH = (valueAtHL & 0x0F) == 0x0F;
+                    valueAtHL++;
+                    WriteMemory(HL, valueAtHL);
+                    FlagZ = (valueAtHL == 0);
+                    FlagN = false;
+                    break;
+
+                case 0x05: // DEC B (Decrement 8-bit register B)
+                    B--;
+                    // Update flags
+                    FlagZ = (B == 0);
+                    FlagN = true;
+                    FlagH = (B & 0x0F) == 0x0F;
+                    break;
+                case 0x15:
+                    D--;
+                    // Update flags
+                    FlagZ = (D == 0);
+                    FlagN = true;
+                    FlagH = (D & 0x0F) == 0x0F;
+                    break;
+                case 0x25:
+                    H--;
+                    // Update flags
+                    FlagZ = (H == 0);
+                    FlagN = true;
+                    FlagH = (H & 0x0F) == 0x0F;
+                    break;
+                case 0x35: // DEC (HL) (Decrement value in memory at address HL)
+                    byte decMemValue = ReadMemory(HL);
+                    decMemValue--;
+                    FlagZ = (decMemValue == 0);
+                    FlagN = true;
+                    FlagH = (decMemValue & 0x0F) == 0x0F;
+                    WriteMemory(HL, decMemValue);
+                    break;
+
+                case 0x06:
+                    B = ReadNextByte();
+                    break;
                 case 0x3E: // LD A, d8 (Load 8-bit immediate value into A)
                     A = ReadNextByte();
-                    return 8;
+                    break;
 
                 case 0xAF: // XOR A (Exclusive OR register A with itself)
                     // This is the most common way games set A to 0!
@@ -152,22 +280,24 @@ namespace GameboyTest
                     FlagN = false;
                     FlagH = false;
                     FlagC = false;
-                    return 4;
+                    break;
 
                 case 0xC3: // JP a16 (Jump to 16-bit address)
                     ushort jumpAddress = ReadNextWord();
                     PC = jumpAddress;
-                    return 16;
+                    Tick();
+                    break;
 
                 case 0xCB: // PREFIX CB (Extended Instructions)
-                    return ExecuteCbOpcode(ReadNextByte());
+                    ExecuteCbOpcode(ReadNextByte());
+                    break;
 
                 default:
                     throw new NotImplementedException($"Opcode 0x{opcode:X2} at PC 0x{PC - 1:X4} is not implemented!");
             }
         }
 
-        private int ExecuteCbOpcode(byte cbOpcode)
+        private void ExecuteCbOpcode(byte cbOpcode)
         {
             // The CB prefix gives access to 256 MORE instructions (Bit shifting, setting, testing)
             switch (cbOpcode)
@@ -177,7 +307,8 @@ namespace GameboyTest
                     FlagN = false;
                     FlagH = true;
                     // Carry flag is untouched
-                    return 8;
+                    Tick();
+                    break;
 
                 default:
                     throw new NotImplementedException($"CB Opcode 0x{cbOpcode:X2} at PC 0x{PC - 2:X4} is not implemented!");
