@@ -1,8 +1,10 @@
+using GameboyTest.Form_Design;
+using GameboyTest.MBC;
+using SkiaSharp;
+using SkiaSharp.Views.Desktop;
 using System;
 using System.Drawing;
 using System.Windows.Forms;
-using SkiaSharp;
-using SkiaSharp.Views.Desktop;
 
 namespace GameboyTest
 {
@@ -29,7 +31,7 @@ namespace GameboyTest
         }
 
         // --- UI INITIALIZATION ---
-
+        private Cartridge activeCartridge;
         private void InitializeMenu()
         {
             MenuStrip menuStrip = new MenuStrip();
@@ -38,27 +40,28 @@ namespace GameboyTest
             ToolStripMenuItem fileMenu = new ToolStripMenuItem("File");
 
             ToolStripMenuItem loadRomItem = new ToolStripMenuItem("Load ROM...");
-            loadRomItem.Click += LoadRom_Click; // Hook up the click event
+            loadRomItem.Click += LoadRom_Click;
 
             ToolStripMenuItem exitItem = new ToolStripMenuItem("Exit");
             exitItem.Click += (s, ev) => this.Close();
 
             // Add items to the File dropdown
             fileMenu.DropDownItems.Add(loadRomItem);
-            fileMenu.DropDownItems.Add(new ToolStripSeparator()); // Adds a nice dividing line
+            fileMenu.DropDownItems.Add(new ToolStripSeparator());
             fileMenu.DropDownItems.Add(exitItem);
 
             // --- DEBUG MENU ---
             ToolStripMenuItem debugMenu = new ToolStripMenuItem("Debug");
 
-            ToolStripMenuItem viewVramItem = new ToolStripMenuItem("View VRAM");
-            ToolStripMenuItem viewCpuItem = new ToolStripMenuItem("CPU State");
+            ToolStripMenuItem viewMemoryItem = new ToolStripMenuItem("View Memory Banks");
 
-            // Add items to Debug dropdown
-            debugMenu.DropDownItems.Add(viewVramItem);
-            debugMenu.DropDownItems.Add(viewCpuItem);
+            // Wire up the exact event handler for the debug window
+            viewMemoryItem.Click += ViewMemory_Click;
 
-            // Add both main menus to the bar
+            // Add item to Debug dropdown
+            debugMenu.DropDownItems.Add(viewMemoryItem);
+
+            // Add both main menus to the top bar
             menuStrip.Items.Add(fileMenu);
             menuStrip.Items.Add(debugMenu);
 
@@ -79,29 +82,58 @@ namespace GameboyTest
         }
 
         // --- EVENT HANDLERS ---
+        private void ViewMemory_Click(object sender, EventArgs e)
+        {
+            // Prevent opening the debugger if no game is loaded
+            if (activeCartridge == null || !activeCartridge.IsLoaded)
+            {
+                MessageBox.Show("Please load a ROM first!", "Debugger Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
 
+            // Create and show the new Debug window
+            MemoryDebugForm debugForm = new MemoryDebugForm(activeCartridge);
+            debugForm.Show(); // .Show() lets you keep using the main emulator while the debug window is open!
+        }
         private void LoadRom_Click(object sender, EventArgs e)
         {
             // Open a standard Windows file browser
             using (OpenFileDialog openFileDialog = new OpenFileDialog())
             {
-                // Only allow the user to see .gb and .gbc files
                 openFileDialog.Filter = "Game Boy ROMs (*.gb;*.gbc)|*.gb;*.gbc|All files (*.*)|*.*";
                 openFileDialog.Title = "Select a Game Boy ROM";
 
-                // If the user clicks "OK" in the file browser
                 if (openFileDialog.ShowDialog() == DialogResult.OK)
                 {
-                    Cartridge gameCartridge = new Cartridge();
+                    // USE THE CLASS-LEVEL CARTRIDGE HERE
+                    activeCartridge = new Cartridge();
 
+                    string romPath = openFileDialog.FileName;
                     // Pass the selected file path to our Cartridge class
-                    if (gameCartridge.LoadRom(openFileDialog.FileName))
+                    if (activeCartridge.LoadRom(openFileDialog.FileName))
                     {
                         // Update the window title to show the loaded game
-                        this.Text = $"Game Boy Emulator - Running: {gameCartridge.Title}";
-                        Console.WriteLine(gameCartridge.RomData);
-                        // NOTE: Later, this is where you will tell your CPU to reset 
-                        // and start executing the newly loaded ROM.
+                        this.Text = $"Game Boy Emulator - Running: {activeCartridge.Title}";
+
+                        // 1. Figure out which MBC chip to create based on the parsed header
+                        IMbc activeMbc;
+
+                        if (activeCartridge.MbcType == "None")
+                        {
+                            activeMbc = new Mbc0(activeCartridge.RomBanks);
+                        }
+                        else if (activeCartridge.MbcType == "MBC3")
+                        {
+                            activeMbc = new Mbc3(activeCartridge.RomBanks, activeCartridge.RamBanks);
+                        }
+                        else
+                        {
+                            MessageBox.Show($"Chip {activeCartridge.MbcType} is not implemented yet!");
+                            return; // Stop loading if we don't support the chip
+                        }
+
+                        // 2. Create the bus and hand it the newly created MBC chip
+                        MemoryBus bus = new MemoryBus(activeMbc);
                     }
                     else
                     {

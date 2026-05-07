@@ -1,52 +1,68 @@
-﻿using System;
+﻿using GameboyTest.MBC;
+using System;
 
 namespace GameboyTest
 {
     public class MemoryBus
     {
-        private Cartridge cartridge;
-        private byte[] vram = new byte[0x2000]; // 8KB Video RAM
-        private byte[] wram = new byte[0x2000]; // 8KB Working RAM
+        // The active Memory Bank Controller (e.g., Mbc0, Mbc3)
+        private IMbc mbc;
 
-        // Pass the loaded cartridge into the bus
-        public MemoryBus(Cartridge loadedCartridge)
+        // Internal Game Boy Memory Arrays
+        private byte[] vram = new byte[0x2000]; // 8KB Video RAM (0x8000 - 0x9FFF)
+        private byte[] wram = new byte[0x2000]; // 8KB Working RAM (0xC000 - 0xDFFF)
+
+        // Pass the interface in, meaning the Bus doesn't care WHICH chip is active!
+        public MemoryBus(IMbc activeMbc)
         {
-            this.cartridge = loadedCartridge;
+            this.mbc = activeMbc;
         }
 
-        // The CPU calls this to read data
         public byte ReadByte(ushort address)
         {
-            // If the address is between 0x0000 and 0x7FFF, read from your RomData!
+            // 1. ROM Space: Route to the active MBC
             if (address <= 0x7FFF)
             {
-                return cartridge.RomData[address];
+                return mbc.Read(address);
             }
-            // If it's looking for Video RAM
+            // 2. Video RAM
             else if (address >= 0x8000 && address <= 0x9FFF)
             {
                 return vram[address - 0x8000];
             }
-            // If it's looking for Working RAM
+            // 3. External Cartridge RAM: Route to the active MBC
+            else if (address >= 0xA000 && address <= 0xBFFF)
+            {
+                return mbc.Read(address);
+            }
+            // 4. Working RAM
             else if (address >= 0xC000 && address <= 0xDFFF)
             {
                 return wram[address - 0xC000];
             }
 
-            // Default fallback if reading unmapped memory
+            // Default fallback if reading unmapped memory or memory we haven't implemented yet
             return 0xFF;
         }
 
-        // The CPU calls this to save data
         public void WriteByte(ushort address, byte value)
         {
-            // Note: You normally can't write to ROM (it's Read-Only!)
-            // So if address <= 0x7FFF, we usually ignore it or handle Bank Switching later.
-
-            if (address >= 0x8000 && address <= 0x9FFF)
+            // 1. ROM Space: MBC Bank Switching Commands
+            if (address <= 0x7FFF)
+            {
+                mbc.Write(address, value);
+            }
+            // 2. Video RAM
+            else if (address >= 0x8000 && address <= 0x9FFF)
             {
                 vram[address - 0x8000] = value;
             }
+            // 3. External Cartridge RAM: Save files/RTC data
+            else if (address >= 0xA000 && address <= 0xBFFF)
+            {
+                mbc.Write(address, value);
+            }
+            // 4. Working RAM
             else if (address >= 0xC000 && address <= 0xDFFF)
             {
                 wram[address - 0xC000] = value;
