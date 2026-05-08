@@ -47,7 +47,7 @@ namespace GameboyTest
         private const int MODE_3_BOUND = 80 + 172; // 252
 
         // --- INTERNAL STATE ---
-        private int scanlineCounter = 0;
+        private int scanlineCounter = 456;
 
         // This replaces your 'triggered' array for accurate STAT blocking!
         private bool statInterruptLine = false;
@@ -55,14 +55,20 @@ namespace GameboyTest
         private Action requestLcdInterrupt;
         private Action requestVBlankInterrupt;
         public uint[] FrameBuffer { get; private set; } = new uint[160 * 144];
+        private byte[] oam { get; set; }
+        private byte[] vram { get; set; }
+        private byte[] io { get; set; }
 
         // A callback to tell your main SkiaSharp window: "The frame is ready, draw it!"
         private Action requestFrameRender;
-        public PPU(Action lcdInterrupt, Action vBlankInterrupt, Action renderCallback)
+        public PPU(Action lcdInterrupt, Action vBlankInterrupt, Action renderCallback, byte[] io, byte[] vram, byte[] oam)
         {
             this.requestLcdInterrupt = lcdInterrupt;
             this.requestVBlankInterrupt = vBlankInterrupt;
             this.requestFrameRender = renderCallback;
+            this.io = io;
+            this.vram = vram;
+            this.oam = oam;
         }
         // Helper to check if the LCD is currently turned on (Bit 7 of LCDC)
         private bool IsLcdEnabled()
@@ -77,19 +83,20 @@ namespace GameboyTest
             {
                 // HARDWARE QUIRK: When LCD is off, LY is 0, Mode is 0, and cycles reset.
                 scanlineCounter = 0;
+                
                 LY = 0;
                 STAT = (byte)((STAT & 0xFC) | 0x00);
                 return;
             }
 
-            scanlineCounter += cycles;
+            scanlineCounter -= cycles;
 
             // If we finished a full horizontal line...
-            if (scanlineCounter >= SCANLINE_CYCLES)
+            if (scanlineCounter <=0)
             {
-                scanlineCounter -= SCANLINE_CYCLES;
+                scanlineCounter = SCANLINE_CYCLES;
                 LY++;
-
+                
                 if (LY == 144)
                 {
                     // We just entered V-Blank! 

@@ -1,4 +1,3 @@
-
 using GameboyTest.Form_Design;
 using GameboyTest.MBC;
 using SkiaSharp;
@@ -30,7 +29,7 @@ namespace GameboyTest
         {
             // 1. Initialize UI Elements (Order matters here for docking)
             InitializeMenu();
-            //InitializeSkiaControl();
+            InitializeSkiaControl();
 
             // 2. Load the default blank screen
             //GenerateTestPicture();
@@ -157,7 +156,10 @@ namespace GameboyTest
 
                             // START THE LOGGER HERE!
                             string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cpu_log.txt");
-                            cpu.Logger.Start(logPath);
+                            
+                            // Optional: provide path to a blargg test text file
+                            string blarggValidationPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "blargg9.txt");
+                            cpu.Logger.Start(logPath, blarggValidationPath);
 
                             // Add a temporary line to write a test string immediately
                             isRunning = false;

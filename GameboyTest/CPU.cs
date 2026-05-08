@@ -93,7 +93,7 @@ namespace GameboyTest
             bus.SystemTimer.Tick(4);
             bus.ppu.Tick(4);
             // NOTE FOR LATER: This is exactly where you will sync the rest of the hardware!
-            // ppu.Step(4);
+            //ppu.Step(4);
             // timer.Step(4);
         }
         private void ResetToPostBootromState()
@@ -134,23 +134,21 @@ namespace GameboyTest
         public void Step()
         {
             // Store the PC before we attempt to execute
-            Logger.LogPC(this.PC);
+            Logger.LogState(this,bus);
             ushort currentPC = PC;
 
-            try
-            {
                 CheckInterrupts();
                 // Add to a small history buffer (keep the last 10 steps)
                 UpdateHistory(currentPC);
 
                 byte opcode = ReadNextByte();
                 ExecuteOpcode(opcode);
-            }
-            catch (Exception ex)
+
+            /*catch (Exception ex)
             {
                 string history = string.Join(" -> ", pcHistory);
                 throw new Exception($"CPU Crash at PC: 0x{currentPC:X4}. \nHistory: {history}\nError: {ex.Message}");
-            }
+            }*/
         }
 
         // Simple history tracker
@@ -183,6 +181,8 @@ namespace GameboyTest
         {
             Tick();
             bus.WriteByte(address, value);
+
+
         }
         private void CheckInterrupts()
         {
@@ -419,6 +419,9 @@ namespace GameboyTest
                     break;
 
                 // --- LOADS & 8-BIT MATH ---
+                case 0x0A: // LD A, (DE)
+                    A = ReadMemory(BC);
+                    break;
                 case 0x1A: // LD A, (DE)
                     A = ReadMemory(DE);
                     break;
@@ -432,7 +435,7 @@ namespace GameboyTest
                     break;
                 case 0x0C: // INC E
                     FlagH = (C & 0x0F) == 0x0F;
-                    E++;
+                    C++;
                     FlagZ = (C == 0); FlagN = false;
                     break;
                 case 0x1C: // INC E
@@ -515,7 +518,14 @@ namespace GameboyTest
                         Tick();
                     }
                     break;
-
+                case 0x09: // ADD HL, HL
+                    int results = HL + BC;
+                    FlagN = false;
+                    FlagH = ((HL & 0xFFF) + (BC & 0xFFF)) > 0xFFF;
+                    FlagC = results > 0xFFFF;
+                    HL = (ushort)results;
+                    Tick();
+                    break;
                 case 0x29: // ADD HL, HL
                     int result29 = HL + HL;
                     FlagN = false;
@@ -529,6 +539,12 @@ namespace GameboyTest
                     // Load memory at HL into A, then instantly increment HL
                     A = ReadMemory(HL);
                     HL++;
+                    break;
+
+                case 0x3A: // LD A, (HL+) (Often written as LDI A, (HL))
+                    // Load memory at HL into A, then instantly increment HL
+                    A = ReadMemory(HL);
+                    HL--;
                     break;
 
                 case 0x2B: // DEC HL
@@ -547,6 +563,22 @@ namespace GameboyTest
                     FlagZ = (L == 0); FlagN = true;
                     FlagH = (L & 0x0F) == 0x0F;
                     break;
+                case 0x3C: // INC L
+                    FlagH = (A & 0x0F) == 0x0F;
+                    A++;
+                    FlagZ = (A == 0); FlagN = false;
+                    break;
+                case 0x3D:
+                    
+                    FlagH = (A & 0x0F) == 0;
+
+
+                    A--;
+                    // 3. Update remaining flags
+                    FlagZ = (A == 0);
+                    FlagN = true; // Always true for DEC
+                                  // FlagC is NOT affected
+                    break;
                 case 0x0E: // LD C, d8
                     C = ReadNextByte();
                     break;
@@ -560,7 +592,18 @@ namespace GameboyTest
                     FlagH = true;
                     // CPL does not touch Z or C flags
                     break;
+                case 0x3F:
+                    // --- CCF (Complement Carry Flag) ---
 
+                    // 1. Toggle the Carry flag
+                    FlagC = !FlagC;
+
+                    // 2. Clear N and H flags
+                    FlagN = false;
+                    FlagH = false;
+
+                    // FlagZ remains unchanged
+                    break;
                 case 0x30: // JR NC, r8 (Jump Relative if Not Carry)
                     sbyte offset30 = (sbyte)ReadNextByte();
                     if (!FlagC)
@@ -1034,10 +1077,14 @@ namespace GameboyTest
                     {
                         PC = Pop16();
                         Tick();
+                        return;
                     }
+
                     break;
                 case 0xC9: // RET (Unconditional Return)
+
                     PC = Pop16();
+                    //throw new Exception($"{PC}");
                     Tick();
                     break;
 
@@ -1048,8 +1095,10 @@ namespace GameboyTest
                     {
                         ushort addrC2 = ReadNextWord();
                         PC = addrC2;
-                        Tick(); // Internal delay to update the PC
+                        Tick();
+                        return;// Internal delay to update the PC
                     }
+                    PC += 2;
                     break;
                 case 0xC3: // JP a16 (Unconditional Jump)
                     PC = ReadNextWord();
@@ -1061,8 +1110,11 @@ namespace GameboyTest
                     {
                         ushort addrCA = ReadNextWord();
                         PC = addrCA;
+                        
                         Tick();
+                        return;
                     }
+                    PC += 2;
                     break;
 
                 // --- CALLS & PUSHES ---
@@ -1070,10 +1122,15 @@ namespace GameboyTest
                     
                     if (!FlagZ)
                     {
-                        Push16(PC); // Push the RETURN address to the stack
                         ushort callAddrC4 = ReadNextWord();
+                        Push16(PC); // Push the RETURN address to the stack
+                        
+                        
                         PC = callAddrC4;
+                        return;
+
                     }
+                    PC += 2;
                     break;
                 case 0xC5: // PUSH BC
                     Push16((ushort)((B << 8) | C));
@@ -1082,10 +1139,13 @@ namespace GameboyTest
                     
                     if (FlagZ)
                     {
-                        Push16(PC);
                         ushort callAddrCC = ReadNextWord();
+                        Push16(PC);
+                        
                         PC = callAddrCC;
+                        return;
                     }
+                    PC += 2;
                     break;
                 case 0xCD: // CALL a16 (Unconditional Call)
                     ushort callAddrCD = ReadNextWord();
@@ -1122,6 +1182,7 @@ namespace GameboyTest
                     {
                         PC = Pop16();
                         Tick(); // Post-pop delay
+                        return;
                     }
                     break;
                 case 0xD1: // POP DE
@@ -1135,6 +1196,7 @@ namespace GameboyTest
                     {
                         PC = Pop16();
                         Tick();
+                        return;
                     }
                     break;
                 case 0xD9: // RETI (Return and Enable Interrupts)
@@ -1151,7 +1213,9 @@ namespace GameboyTest
                         ushort addrD2 = ReadNextWord();
                         PC = addrD2;
                         Tick();
+                        return;
                     }
+                    PC += 2;
                     break;
                 case 0xDA: // JP C, a16 (Jump if Carry)
                     
@@ -1160,7 +1224,9 @@ namespace GameboyTest
                         ushort addrDA = ReadNextWord();
                         PC = addrDA;
                         Tick();
+                        return;
                     }
+                    PC += 2;
                     break;
 
                 // --- CALLS & PUSHES ---
@@ -1171,7 +1237,9 @@ namespace GameboyTest
                         ushort callAddrD4 = ReadNextWord();
                         Push16(PC);
                         PC = callAddrD4;
+                        return;
                     }
+                    PC += 2;
                     break;
                 case 0xD5: // PUSH DE
                     Push16((ushort)((D << 8) | E));
@@ -1183,7 +1251,9 @@ namespace GameboyTest
                         ushort callAddrDC = ReadNextWord();
                         Push16(PC);
                         PC = callAddrDC;
+                        return;
                     }
+                    PC += 2;
                     break;
 
                 // --- IMMEDIATE MATH ---
@@ -1255,6 +1325,7 @@ namespace GameboyTest
                     break;
                 // --- HIGH RAM (HRAM) READS ---
                 case 0xF0: // LDH A, (a8)  (Load A from 0xFF00 + 8-bit offset)
+                    //throw new Exception($"{ReadMemory((ushort)(0xFF00 + ReadNextByte()))},{bus.ppu.LY}");
                     A = ReadMemory((ushort)(0xFF00 + ReadNextByte()));
                     break;
                 case 0xF2: // LDH A, (C)   (Load A from 0xFF00 + register C)
@@ -1441,8 +1512,20 @@ namespace GameboyTest
             FlagN = true; // Set to true because this is a subtraction operation
             int lowerA = A & 0x0F;
             int lowerValue = value & 0x0F;
-            FlagH = ((lowerA - lowerValue < 0x00) && (lowerA > 0x8 || lowerValue > 0x8));
-            FlagC = (A < value); // Check for full borrow
+            if((lowerA - lowerValue < 0x00) && (lowerA > 0x8 || lowerValue > 0x8))
+            {
+                FlagH = true;
+            }
+            else
+            {
+                FlagH = false;
+                if (lowerA - lowerValue < 0x00)
+                {
+                    FlagH = true;
+                }
+            }
+
+                FlagC = (A < value); // Check for full borrow
         }
         // --- STACK HELPER METHODS ---
         private void Push16(ushort value)
@@ -1783,7 +1866,7 @@ namespace GameboyTest
                     TestBit(B, 3); 
                     break;
                 case 0x59: 
-                    TestBit(C, 3);
+                    TestBit(C, 3); 
                     break;
                 case 0x5A: 
                     TestBit(D, 3); 

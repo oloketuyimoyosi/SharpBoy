@@ -19,12 +19,12 @@ namespace GameboyTest
             Joypad = 4
         }
         // Internal Game Boy Memory Arrays
-        private byte[] vram = new byte[0x2000]; // 8KB Video RAM (0x8000 - 0x9FFF)
+        public byte[] vram = new byte[0x2000]; // 8KB Video RAM (0x8000 - 0x9FFF)
         private byte[] wram = new byte[0x2000]; // 8KB Working RAM (0xC000 - 0xDFFF)
 
         // --- NEW HARDWARE ARRAYS ---
-        private byte[] oam = new byte[0xA0];    // 160 bytes Sprite RAM (0xFE00 - 0xFE9F)
-        private byte[] io = new byte[0x80];     // 128 bytes I/O Registers (0xFF00 - 0xFF7F)
+        public byte[] oam = new byte[0xA0];    // 160 bytes Sprite RAM (0xFE00 - 0xFE9F)
+        public byte[] io = new byte[0x80];     // 128 bytes I/O Registers (0xFF00 - 0xFF7F)
         private byte[] hram = new byte[0x7F];   // 127 bytes High RAM (0xFF80 - 0xFFFE)
         private byte ieRegister = 0x00;         // 1 byte Interrupt Enable (0xFFFF)
 
@@ -32,7 +32,7 @@ namespace GameboyTest
         {
             this.mbc = activeMbc;
             SystemTimer = new Timer(RequestTimerInterrupt);
-            ppu = new PPU(RequestLcdInterrupt, RequestVBlankInterrupt, renderCallback);
+            ppu = new PPU(RequestLcdInterrupt, RequestVBlankInterrupt, renderCallback,io,vram,oam);
             InitializeHardwareRegisters();
         }
         
@@ -74,8 +74,10 @@ namespace GameboyTest
             if (address == 0xFF05) return SystemTimer.TIMA;
             if (address == 0xFF06) return SystemTimer.TMA;
             if (address == 0xFF07) return SystemTimer.TAC;
+            if (address == 0xFF40) return ppu.LCDC;
             if (address == 0xFF42) return ppu.SCY;
             if (address == 0xFF43) return ppu.SCX;
+            if (address == 0xFF44) return ppu.LY;
             if (address == 0xFF4A) return ppu.WY;
             if (address == 0xFF4B) return ppu.WX;
             if (address == 0xFF47) return ppu.BGP;
@@ -85,6 +87,7 @@ namespace GameboyTest
             {
                 // NOTE: When you build your Joypad or Timer classes, you will intercept
                 // reads here and return dynamic values instead of just reading the array!
+               
                 return io[address - 0xFF00];
             }
 
@@ -148,7 +151,8 @@ namespace GameboyTest
             if (address == 0xFF07) { SystemTimer.SetTAC(value); return; }
             if (address == 0xFF40) { ppu.LCDC = value;  return; }
             if (address == 0xFF41) { ppu.STAT = value; return; } // Note: Lower 3 bits are technically read-only!
-            if (address == 0xFF44) { /* LY is Read-Only! */ return; }
+            if (address == 0xFF44) { 
+                if (value == 0x91) { throw new Exception($"{address}"); } return; }
             if (address == 0xFF45) { ppu.LYC = value; return; }
             if (address == 0xFF42) { ppu.SCY = value; return; }
             if (address == 0xFF43) { ppu.SCX = value; return; }
@@ -175,8 +179,8 @@ namespace GameboyTest
         // Helper method to make reading the absolute addresses easier
         private void InitIO(ushort address, byte value)
         {
-            
-            WriteByte(address, value);
+            io[address - 0xff00] = value;
+            //WriteByte(address, value);
         }
         public void RequestInterrupt(InterruptType type)
         {
@@ -244,7 +248,8 @@ namespace GameboyTest
             InitIO(0xFF41, 0x85); // STAT (LCD Status)
             InitIO(0xFF42, 0x00); // SCY (Scroll Y)
             InitIO(0xFF43, 0x00); // SCX (Scroll X)
-            InitIO(0xFF44, 0x00); // LY (LCD Y-Coordinate)
+            InitIO(0xFF44, 0x90); // LY (LCD Y-Coordinate)
+            ppu.LY = 0; // Set the PPU's internal LY to match the hardware register
             InitIO(0xFF45, 0x00); // LYC (LY Compare)
             InitIO(0xFF46, 0xFF); // DMA (Direct Memory Access Transfer)
             InitIO(0xFF47, 0xFC); // BGP (Background Palette - Maps 0,1,2,3 to actual colors)
