@@ -6,6 +6,7 @@ using SkiaSharp.Views.Desktop;
 using System;
 using System.Drawing;
 using System.Windows.Forms;
+using System.Runtime.InteropServices;
 
 namespace GameboyTest
 {
@@ -142,11 +143,26 @@ namespace GameboyTest
                         }
 
                         // 2. Create the bus and hand it the newly created MBC chip
-                        bus = new MemoryBus(activeMbc);
 
-                        // 3. Create the CPU and connect it to the bus!
-                        cpu = new CPU(bus);
-                        isRunning = false;
+                        
+                        if (activeCartridge.LoadRom(openFileDialog.FileName))
+                        {
+                            // TRIPWIRE 3: Did the ROM actually load into memory successfully?
+                            MessageBox.Show("3. ROM Loaded successfully!");
+
+                            // ... your MBC routing logic ...
+
+                            bus = new MemoryBus(activeMbc, OnFrameReadyToDraw);
+                            cpu = new CPU(bus);
+
+                            // START THE LOGGER HERE!
+                            string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cpu_log.txt");
+                            cpu.Logger.Start(logPath);
+
+                            // Add a temporary line to write a test string immediately
+                            isRunning = false;
+                            // ... task thread starting logic ...
+                        }
 
                         // 2. Wait a split second to let the old thread safely die
                         if (emulatorTask != null && !emulatorTask.IsCompleted)
@@ -164,37 +180,15 @@ namespace GameboyTest
             }
         }
 
-        // --- SKIASHARP RENDERING ---
-
-        private void GenerateTestPicture()
-        {
-            frameBuffer = new SKBitmap(160, 144);
-            using (SKCanvas canvas = new SKCanvas(frameBuffer))
-            {
-                canvas.Clear(new SKColor(155, 188, 15));
-                using (SKPaint paint = new SKPaint { Color = new SKColor(15, 56, 15), Style = SKPaintStyle.Fill })
-                {
-                    canvas.DrawRect(40, 40, 80, 64, paint);
-                }
-            }
-        }
-
-        private void SkiaControl_PaintSurface(object sender, SKPaintSurfaceEventArgs e)
-        {
-            SKCanvas canvas = e.Surface.Canvas;
-            canvas.Clear(SKColors.Black);
-
-            // Adjust destination rect to account for the menu bar pushing the canvas down
-            SKRect destinationRect = e.Info.Rect;
-            using (SKPaint paint = new SKPaint { FilterQuality = SKFilterQuality.None })
-            {
-                canvas.DrawBitmap(frameBuffer, destinationRect, paint);
-            }
-        }
+        
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             // Kill the emulator loop before Windows destroys the window
             isRunning = false;
+            if (cpu != null)
+            {
+                cpu.Logger.Stop();
+            }
         }
         private void RunEmulatorEngine()
         {
@@ -209,6 +203,61 @@ namespace GameboyTest
                 // 2. (Future) If 70,224 cycles have passed:
                 //    - Tell SkiaSharp to draw the screen
                 //    - Thread.Sleep() to lock the speed to 60 FPS
+            }
+        }
+        private void OnFrameReadyToDraw()
+        {
+            // The PPU runs on the Task thread. We must jump back to the UI thread to draw.
+            if (skiaControl == null || bus == null) return;
+            if (skiaControl.InvokeRequired)
+            {
+                skiaControl.BeginInvoke(new Action(() => skiaControl.Invalidate()));
+            }
+            else
+            {
+                skiaControl.Invalidate();
+            }
+        }
+        // --- SKIASHARP RENDERING ---
+        private void SkiaControl_PaintSurface(object sender, SKPaintSurfaceEventArgs e)
+        {
+            SKCanvas canvas = e.Surface.Canvas;
+            canvas.Clear(SKColors.Black);
+
+            // Wait until the emulator is fully loaded and running
+            if (bus == null || bus.ppu == null || !isRunning) return;
+
+            // 1. PIN THE PPU'S ARRAY IN RAM
+            // This prevents the Garbage Collector from moving the memory while the GPU reads it
+            GCHandle handle = GCHandle.Alloc(bus.ppu.FrameBuffer, GCHandleType.Pinned);
+
+            try
+            {
+                IntPtr pointer = handle.AddrOfPinnedObject();
+
+                // 2. TELL SKIA WHAT THE DATA LOOKS LIKE (160x144, 32-bit colors)
+                SKImageInfo info = new SKImageInfo(160, 144, SKColorType.Bgra8888, SKAlphaType.Opaque);
+
+                // 3. WRAP THE RAW POINTER IN A BITMAP
+                using (SKBitmap bitmap = new SKBitmap())
+                {
+                    bitmap.InstallPixels(info, pointer, info.RowBytes, delegate { }, null);
+
+                    // 4. DRAW IT!
+                    // FilterQuality.None ensures the pixels stay sharp and blocky when scaled
+                    using (SKPaint paint = new SKPaint { FilterQuality = SKFilterQuality.None, IsAntialias = false })
+                    {
+                        // e.Info.Rect is the exact size of your control (480x432).
+                        // Drawing into this rect automatically handles your 3x scaling!
+                        SKRect destinationRect = e.Info.Rect;
+                        canvas.DrawBitmap(bitmap, destinationRect, paint);
+                    }
+                }
+            }
+            finally
+            {
+                // ALWAYS free the handle so C# can manage memory safely again
+                handle.Free();
             }
         }
     }

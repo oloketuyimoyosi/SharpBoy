@@ -1,9 +1,10 @@
-﻿using System;
+﻿using GameboyTest.Debugger;
+using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using System;
 
 namespace GameboyTest
 {
@@ -76,7 +77,7 @@ namespace GameboyTest
         public bool IME { get; set; } // Interrupt Master Enable
         public bool Halted { get; set; }
         public ulong TotalClockCycles { get; private set; }
-
+        public CpuLogger Logger { get; private set; } = new CpuLogger();
         public CPU(MemoryBus memoryBus)
         {
             this.bus = memoryBus;
@@ -89,7 +90,8 @@ namespace GameboyTest
         {
             // Every memory access takes 1 M-Cycle, which is 4 T-Cycles
             TotalClockCycles += 4;
-
+            bus.SystemTimer.Tick(4);
+            bus.ppu.Tick(4);
             // NOTE FOR LATER: This is exactly where you will sync the rest of the hardware!
             // ppu.Step(4);
             // timer.Step(4);
@@ -111,8 +113,9 @@ namespace GameboyTest
 
         // Returns the number of T-Cycles (clock cycles) the instruction took.
         // This is crucial for syncing the audio and graphics later!
-        public void Step()
+        /*public void Step()
         {
+            Logger.LogPC(PC);
             CheckInterrupts();
             if (Halted)
             {
@@ -127,6 +130,35 @@ namespace GameboyTest
             // 2. Decode and Execute
             ExecuteOpcode(opcode);
             PC++;
+        }*/
+        public void Step()
+        {
+            // Store the PC before we attempt to execute
+            Logger.LogPC(this.PC);
+            ushort currentPC = PC;
+
+            try
+            {
+                CheckInterrupts();
+                // Add to a small history buffer (keep the last 10 steps)
+                UpdateHistory(currentPC);
+
+                byte opcode = ReadNextByte();
+                ExecuteOpcode(opcode);
+            }
+            catch (Exception ex)
+            {
+                string history = string.Join(" -> ", pcHistory);
+                throw new Exception($"CPU Crash at PC: 0x{currentPC:X4}. \nHistory: {history}\nError: {ex.Message}");
+            }
+        }
+
+        // Simple history tracker
+        private List<string> pcHistory = new List<string>();
+        private void UpdateHistory(ushort pc)
+        {
+            pcHistory.Add(pc.ToString("X4"));
+            
         }
 
         // Helper to read a byte and push the PC forward automatically
@@ -346,7 +378,27 @@ namespace GameboyTest
                     A = (byte)((A << 1) | (oldCarryRLA ? 1 : 0)); // Old carry goes into 0th bit
                     FlagZ = false; FlagN = false; FlagH = false; // RLA always clears Z, N, and H
                     break;
+                case 0x08:
+                    // --- LD (a16), SP ---
 
+                    // 1. Fetch the 16-bit absolute address from the next two bytes (Little-Endian)
+                    byte lowAddr = ReadNextByte();
+                    byte highAddr = ReadNextByte();
+                    ushort absoluteAddress = (ushort)((highAddr << 8) | lowAddr);
+
+                    // 2. Extract the low and high bytes of the Stack Pointer
+                    byte spLow = (byte)(SP & 0xFF);
+                    byte spHigh = (byte)(SP >> 8);
+
+                    // 3. Write the low byte to the address
+                    WriteMemory(absoluteAddress, spLow);
+
+                    // 4. Write the high byte to address + 1
+                    // (Cast to ushort ensures the math wraps around 0xFFFF correctly)
+                    WriteMemory((ushort)(absoluteAddress + 1), spHigh);
+
+                    // Flags are completely unaffected by this operation!
+                    break;
                 case 0x18: // JR r8 (Jump Relative - Unconditional)
                     // The offset is a SIGNED 8-bit integer (-128 to 127). 
                     // This allows jumping backward in memory (loops)!
@@ -370,18 +422,29 @@ namespace GameboyTest
                 case 0x1A: // LD A, (DE)
                     A = ReadMemory(DE);
                     break;
-
+                case 0x0B: // DEC DE
+                    BC--;
+                    Tick(); // 16-bit math delay
+                    break;
                 case 0x1B: // DEC DE
                     DE--;
                     Tick(); // 16-bit math delay
                     break;
-
+                case 0x0C: // INC E
+                    FlagH = (C & 0x0F) == 0x0F;
+                    E++;
+                    FlagZ = (C == 0); FlagN = false;
+                    break;
                 case 0x1C: // INC E
                     FlagH = (E & 0x0F) == 0x0F;
                     E++;
                     FlagZ = (E == 0); FlagN = false;
                     break;
-
+                case 0x0D: // DEC E
+                    C--;
+                    FlagZ = (C == 0); FlagN = true;
+                    FlagH = (C & 0x0F) == 0x0F;
+                    break;
                 case 0x1D: // DEC E
                     E--;
                     FlagZ = (E == 0); FlagN = true;
@@ -390,6 +453,23 @@ namespace GameboyTest
 
                 case 0x1E: // LD E, d8
                     E = ReadNextByte();
+                    break;
+                case 0x0F:
+                    // --- RRCA (Rotate Right Circular Accumulator) ---
+
+                    // 1. Grab Bit 0 to see if it carries over
+                    bool carry0x0F = (A & 0x01) != 0;
+
+                    // 2. Shift A right by 1, and wrap the carry bit around to Bit 7
+                    A = (byte)((A >> 1) | (carry0x0F ? 0x80 : 0));
+
+                    // 3. Update Flags (Notice that FlagZ is FORCED to false!)
+                    FlagZ = false;
+                    FlagN = false;
+                    FlagH = false;
+                    FlagC = carry0x0F;
+
+                    // 4. Pad the execution time (4 T-Cycles)
                     break;
 
                 case 0x1F: // RRA (Rotate A Right through Carry)
@@ -467,7 +547,9 @@ namespace GameboyTest
                     FlagZ = (L == 0); FlagN = true;
                     FlagH = (L & 0x0F) == 0x0F;
                     break;
-
+                case 0x0E: // LD C, d8
+                    C = ReadNextByte();
+                    break;
                 case 0x2E: // LD L, d8
                     L = ReadNextByte();
                     break;
@@ -1907,6 +1989,133 @@ namespace GameboyTest
                 case 0x9F:
                     A = ResetBit(A, 3); 
                     break;
+                // ==========================================
+                // ========= FINISHING RES BITS 4-7 =========
+                // ==========================================
+
+                // --- RES 4 ---
+                case 0xA0: B = ResetBit(B, 4); break;
+                case 0xA1: C = ResetBit(C, 4); break;
+                case 0xA2: D = ResetBit(D, 4); break;
+                case 0xA3: E = ResetBit(E, 4); break;
+                case 0xA4: H = ResetBit(H, 4); break;
+                case 0xA5: L = ResetBit(L, 4); break;
+                case 0xA6: WriteMemory(HL, ResetBit(ReadMemory(HL), 4)); break;
+                case 0xA7: A = ResetBit(A, 4); break;
+
+                // --- RES 5 ---
+                case 0xA8: B = ResetBit(B, 5); break;
+                case 0xA9: C = ResetBit(C, 5); break;
+                case 0xAA: D = ResetBit(D, 5); break;
+                case 0xAB: E = ResetBit(E, 5); break;
+                case 0xAC: H = ResetBit(H, 5); break;
+                case 0xAD: L = ResetBit(L, 5); break;
+                case 0xAE: WriteMemory(HL, ResetBit(ReadMemory(HL), 5)); break;
+                case 0xAF: A = ResetBit(A, 5); break;
+
+                // --- RES 6 ---
+                case 0xB0: B = ResetBit(B, 6); break;
+                case 0xB1: C = ResetBit(C, 6); break;
+                case 0xB2: D = ResetBit(D, 6); break;
+                case 0xB3: E = ResetBit(E, 6); break;
+                case 0xB4: H = ResetBit(H, 6); break;
+                case 0xB5: L = ResetBit(L, 6); break;
+                case 0xB6: WriteMemory(HL, ResetBit(ReadMemory(HL), 6)); break;
+                case 0xB7: A = ResetBit(A, 6); break;
+
+                // --- RES 7 ---
+                case 0xB8: B = ResetBit(B, 7); break;
+                case 0xB9: C = ResetBit(C, 7); break;
+                case 0xBA: D = ResetBit(D, 7); break;
+                case 0xBB: E = ResetBit(E, 7); break;
+                case 0xBC: H = ResetBit(H, 7); break;
+                case 0xBD: L = ResetBit(L, 7); break;
+                case 0xBE: WriteMemory(HL, ResetBit(ReadMemory(HL), 7)); break;
+                case 0xBF: A = ResetBit(A, 7); break;
+
+                // ==========================================
+                // ========= SET (SET) OPERATIONS ===========
+                // ==========================================
+
+                // --- SET 0 ---
+                case 0xC0: B = SetBit(B, 0); break;
+                case 0xC1: C = SetBit(C, 0); break;
+                case 0xC2: D = SetBit(D, 0); break;
+                case 0xC3: E = SetBit(E, 0); break;
+                case 0xC4: H = SetBit(H, 0); break;
+                case 0xC5: L = SetBit(L, 0); break;
+                case 0xC6: WriteMemory(HL, SetBit(ReadMemory(HL), 0)); break;
+                case 0xC7: A = SetBit(A, 0); break;
+
+                // --- SET 1 ---
+                case 0xC8: B = SetBit(B, 1); break;
+                case 0xC9: C = SetBit(C, 1); break;
+                case 0xCA: D = SetBit(D, 1); break;
+                case 0xCB: E = SetBit(E, 1); break;
+                case 0xCC: H = SetBit(H, 1); break;
+                case 0xCD: L = SetBit(L, 1); break;
+                case 0xCE: WriteMemory(HL, SetBit(ReadMemory(HL), 1)); break;
+                case 0xCF: A = SetBit(A, 1); break;
+
+                // --- SET 2 ---
+                case 0xD0: B = SetBit(B, 2); break;
+                case 0xD1: C = SetBit(C, 2); break;
+                case 0xD2: D = SetBit(D, 2); break;
+                case 0xD3: E = SetBit(E, 2); break;
+                case 0xD4: H = SetBit(H, 2); break;
+                case 0xD5: L = SetBit(L, 2); break;
+                case 0xD6: WriteMemory(HL, SetBit(ReadMemory(HL), 2)); break;
+                case 0xD7: A = SetBit(A, 2); break;
+
+                // --- SET 3 ---
+                case 0xD8: B = SetBit(B, 3); break;
+                case 0xD9: C = SetBit(C, 3); break;
+                case 0xDA: D = SetBit(D, 3); break;
+                case 0xDB: E = SetBit(E, 3); break;
+                case 0xDC: H = SetBit(H, 3); break;
+                case 0xDD: L = SetBit(L, 3); break;
+                case 0xDE: WriteMemory(HL, SetBit(ReadMemory(HL), 3)); break;
+                case 0xDF: A = SetBit(A, 3); break;
+
+                // --- SET 4 ---
+                case 0xE0: B = SetBit(B, 4); break;
+                case 0xE1: C = SetBit(C, 4); break;
+                case 0xE2: D = SetBit(D, 4); break;
+                case 0xE3: E = SetBit(E, 4); break;
+                case 0xE4: H = SetBit(H, 4); break;
+                case 0xE5: L = SetBit(L, 4); break;
+                case 0xE6: WriteMemory(HL, SetBit(ReadMemory(HL), 4)); break;
+                case 0xE7: A = SetBit(A, 4); break;
+
+                // --- SET 5 ---
+                case 0xE8: B = SetBit(B, 5); break;
+                case 0xE9: C = SetBit(C, 5); break;
+                case 0xEA: D = SetBit(D, 5); break;
+                case 0xEB: E = SetBit(E, 5); break;
+                case 0xEC: H = SetBit(H, 5); break;
+                case 0xED: L = SetBit(L, 5); break;
+                case 0xEE: WriteMemory(HL, SetBit(ReadMemory(HL), 5)); break;
+                case 0xEF: A = SetBit(A, 5); break;
+
+                // --- SET 6 ---
+                case 0xF0: B = SetBit(B, 6); break;
+                case 0xF1: C = SetBit(C, 6); break;
+                case 0xF2: D = SetBit(D, 6); break;
+                case 0xF3: E = SetBit(E, 6); break;
+                case 0xF4: H = SetBit(H, 6); break;
+                case 0xF5: L = SetBit(L, 6); break;
+                case 0xF6: WriteMemory(HL, SetBit(ReadMemory(HL), 6)); break;
+                case 0xF7: A = SetBit(A, 6); break;
+
+                // --- SET 7 ---
+                case 0xF8: B = SetBit(B, 7); break;
+                case 0xF9: C = SetBit(C, 7); break;
+                case 0xFA: D = SetBit(D, 7); break;
+                case 0xFB: E = SetBit(E, 7); break;
+                case 0xFC: H = SetBit(H, 7); break;
+                case 0xFD: L = SetBit(L, 7); break;
+                case 0xFE: WriteMemory(HL, SetBit(ReadMemory(HL), 7)); break;
+                case 0xFF: A = SetBit(A, 7); break;
 
 
 
@@ -1927,7 +2136,7 @@ namespace GameboyTest
             FlagN = false;
             FlagH = false;
             FlagC = carry;
-            Tick();
+
             return result;
         }
 
@@ -1944,7 +2153,7 @@ namespace GameboyTest
             FlagN = false;
             FlagH = false;
             FlagC = carry;
-            Tick();
+       
             return result;
         }
         private byte Rl(byte value)
@@ -1963,7 +2172,7 @@ namespace GameboyTest
             FlagN = false;
             FlagH = false;
             FlagC = newCarry;
-            Tick();
+            
             return result;
         }
 
@@ -1983,7 +2192,7 @@ namespace GameboyTest
             FlagN = false;
             FlagH = false;
             FlagC = newCarry;
-            Tick();
+            
             return result;
         }
         private byte Sla(byte value)
@@ -1999,7 +2208,7 @@ namespace GameboyTest
             FlagN = false;
             FlagH = false;
             FlagC = carry;
-            Tick();
+            
             return result;
         }
         private byte Sra(byte value)
@@ -2018,7 +2227,7 @@ namespace GameboyTest
             FlagN = false;
             FlagH = false;
             FlagC = carry;
-            Tick();
+            
             return result;
         }
         private byte Swap(byte value)
@@ -2035,7 +2244,7 @@ namespace GameboyTest
             FlagN = false;
             FlagH = false;
             FlagC = false;
-            Tick();
+            
             return result;
         }
         private byte Srl(byte value)
@@ -2052,7 +2261,7 @@ namespace GameboyTest
             FlagN = false;
             FlagH = false;
             FlagC = carry;
-            Tick();
+            
             return result;
         }
         private void TestBit(byte value, int bitPosition)
@@ -2067,7 +2276,7 @@ namespace GameboyTest
             FlagZ = isBitZero;
             FlagN = false;
             FlagH = true; // Hardware quirk: BIT always sets the Half-Carry flag
-            Tick();
+            
             // FlagC remains unchanged!
         }
         private byte ResetBit(byte value, int bitPosition)
@@ -2078,8 +2287,18 @@ namespace GameboyTest
 
             // 3. Use bitwise AND. The 0 forces the target bit to turn off, 
             // while the 1s leave all other bits perfectly intact!
-            Tick();
+            
             return (byte)(value & mask);
         }
+        private byte SetBit(byte value, int bitPosition)
+        {
+            // 1. Create a mask for the specific bit (e.g., 1 << 0 is 0000 0001)
+            int mask = 1 << bitPosition;
+
+            // 2. Use bitwise OR. The 0s in the mask leave the original bits intact, 
+            // but the 1 forces the target bit to turn on!
+            return (byte)(value | mask);
+        }
     }
+
 }

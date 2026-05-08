@@ -8,6 +8,8 @@ namespace GameboyTest
     public class MemoryBus
     {
         private IMbc mbc;
+        public Timer SystemTimer { get; private set; }
+        public PPU ppu { get; private set; }
         public enum InterruptType
         {
             VBlank = 0,
@@ -26,12 +28,16 @@ namespace GameboyTest
         private byte[] hram = new byte[0x7F];   // 127 bytes High RAM (0xFF80 - 0xFFFE)
         private byte ieRegister = 0x00;         // 1 byte Interrupt Enable (0xFFFF)
 
-        public MemoryBus(IMbc activeMbc)
+        public MemoryBus(IMbc activeMbc, Action renderCallback)
         {
             this.mbc = activeMbc;
+            SystemTimer = new Timer(RequestTimerInterrupt);
+            ppu = new PPU(RequestLcdInterrupt, RequestVBlankInterrupt, renderCallback);
             InitializeHardwareRegisters();
-
         }
+        
+           
+        
 
         public byte ReadByte(ushort address)
         {
@@ -64,6 +70,17 @@ namespace GameboyTest
                 return 0xFF;
 
             // 8. I/O Registers (Joypad, Timers, Audio, LCD)
+            if (address == 0xFF04) return SystemTimer.DIV;
+            if (address == 0xFF05) return SystemTimer.TIMA;
+            if (address == 0xFF06) return SystemTimer.TMA;
+            if (address == 0xFF07) return SystemTimer.TAC;
+            if (address == 0xFF42) return ppu.SCY;
+            if (address == 0xFF43) return ppu.SCX;
+            if (address == 0xFF4A) return ppu.WY;
+            if (address == 0xFF4B) return ppu.WX;
+            if (address == 0xFF47) return ppu.BGP;
+            if (address == 0xFF48) return ppu.OBP0;
+            if (address == 0xFF49) return ppu.OBP1;
             if (address >= 0xFF00 && address <= 0xFF7F)
             {
                 // NOTE: When you build your Joypad or Timer classes, you will intercept
@@ -90,7 +107,10 @@ namespace GameboyTest
 
             // 2. Video RAM
             else if (address >= 0x8000 && address <= 0x9FFF)
+            {
                 vram[address - 0x8000] = value;
+                ppu.VRAM[address - 0x8000] = value;
+            }
 
             // 3. External Cartridge RAM/RTC
             else if (address >= 0xA000 && address <= 0xBFFF)
@@ -106,15 +126,37 @@ namespace GameboyTest
 
             // 6. OAM (Sprite Data)
             else if (address >= 0xFE00 && address <= 0xFE9F)
+            {
                 oam[address - 0xFE00] = value;
-
+                ppu.OAM[address - 0xFE00] = value;
+            }
             // 7. Unusable Space
             else if (address >= 0xFEA0 && address <= 0xFEFF)
             {
                 // Ignored on write
             }
 
+
             // 8. I/O Registers
+            if (address == 0xFF04)
+            {
+                SystemTimer.ResetDiv(); // Writing ANYTHING to DIV resets it!
+                return;
+            }
+            if (address == 0xFF05) { SystemTimer.TIMA = value; return; }
+            if (address == 0xFF06) { SystemTimer.TMA = value; return; }
+            if (address == 0xFF07) { SystemTimer.SetTAC(value); return; }
+            if (address == 0xFF40) { ppu.LCDC = value;  return; }
+            if (address == 0xFF41) { ppu.STAT = value; return; } // Note: Lower 3 bits are technically read-only!
+            if (address == 0xFF44) { /* LY is Read-Only! */ return; }
+            if (address == 0xFF45) { ppu.LYC = value; return; }
+            if (address == 0xFF42) { ppu.SCY = value; return; }
+            if (address == 0xFF43) { ppu.SCX = value; return; }
+            if (address == 0xFF4A) { ppu.WY = value; return; }
+            if (address == 0xFF4B) { ppu.WX = value; return; } 
+            if (address == 0xFF47) { ppu.BGP = value; return; } 
+            if (address == 0xFF48) { ppu.OBP0 = value; return; } 
+            if (address == 0xFF49) { ppu.OBP1 = value; return; }
             else if (address >= 0xFF00 && address <= 0xFF7F)
             {
                 // NOTE: Similar to reading, you will intercept specific writes here later.
@@ -133,7 +175,8 @@ namespace GameboyTest
         // Helper method to make reading the absolute addresses easier
         private void InitIO(ushort address, byte value)
         {
-            io[address - 0xFF00] = value;
+            
+            WriteByte(address, value);
         }
         public void RequestInterrupt(InterruptType type)
         {
@@ -212,6 +255,26 @@ namespace GameboyTest
 
             // --- MISCELLANEOUS ---
             InitIO(0xFF50, 0x01); // Bootrom Disable (Setting this to 1 hides the Nintendo logo memory)
+        }
+        private void RequestTimerInterrupt()
+        {
+            // The Timer Interrupt is Bit 2 of the Interrupt Flag (IF) register at 0xFF0F.
+            // We will read the current IF value, set Bit 2 to true, and write it back!
+            byte currentIF = ReadByte(0xFF0F);
+            WriteByte(0xFF0F, (byte)(currentIF | 0x04));
+        }
+        private void RequestVBlankInterrupt()
+        {
+            // V-Blank is Bit 0 of the IF Register (0xFF0F)
+            byte currentIF = ReadByte(0xFF0F);
+            WriteByte(0xFF0F, (byte)(currentIF | 0x01));
+        }
+
+        private void RequestLcdInterrupt()
+        {
+            // LCD STAT is Bit 1 of the IF Register (0xFF0F)
+            byte currentIF = ReadByte(0xFF0F);
+            WriteByte(0xFF0F, (byte)(currentIF | 0x02));
         }
     }
 }
