@@ -1,3 +1,4 @@
+
 using GameboyTest.Form_Design;
 using GameboyTest.MBC;
 using SkiaSharp;
@@ -12,6 +13,10 @@ namespace GameboyTest
     {
         private SKControl skiaControl;
         private SKBitmap frameBuffer;
+        MemoryBus bus;
+        CPU cpu;
+        private bool isRunning = false;
+        private System.Threading.Tasks.Task emulatorTask;
 
         public Form1()
         {
@@ -54,12 +59,12 @@ namespace GameboyTest
             ToolStripMenuItem debugMenu = new ToolStripMenuItem("Debug");
 
             ToolStripMenuItem viewMemoryItem = new ToolStripMenuItem("View Memory Banks");
-
-            // Wire up the exact event handler for the debug window
             viewMemoryItem.Click += ViewMemory_Click;
 
-            // Add item to Debug dropdown
-            debugMenu.DropDownItems.Add(viewMemoryItem);
+            // --- NEW: Diagnostic Suite Item ---
+
+            // Add items to Debug dropdown
+            debugMenu.DropDownItems.Add(viewMemoryItem); // Added to the dropdown here
 
             // Add both main menus to the top bar
             menuStrip.Items.Add(fileMenu);
@@ -97,6 +102,7 @@ namespace GameboyTest
         }
         private void LoadRom_Click(object sender, EventArgs e)
         {
+
             // Open a standard Windows file browser
             using (OpenFileDialog openFileDialog = new OpenFileDialog())
             {
@@ -136,7 +142,19 @@ namespace GameboyTest
                         }
 
                         // 2. Create the bus and hand it the newly created MBC chip
-                        MemoryBus bus = new MemoryBus(activeMbc);
+                        bus = new MemoryBus(activeMbc);
+
+                        // 3. Create the CPU and connect it to the bus!
+                        cpu = new CPU(bus);
+                        isRunning = false;
+
+                        // 2. Wait a split second to let the old thread safely die
+                        if (emulatorTask != null && !emulatorTask.IsCompleted)
+                            emulatorTask.Wait(100);
+
+                        // 3. Turn the power on and boot the new thread!
+                        isRunning = true;
+                        emulatorTask = System.Threading.Tasks.Task.Run(() => RunEmulatorEngine());
                     }
                     else
                     {
@@ -171,6 +189,26 @@ namespace GameboyTest
             using (SKPaint paint = new SKPaint { FilterQuality = SKFilterQuality.None })
             {
                 canvas.DrawBitmap(frameBuffer, destinationRect, paint);
+            }
+        }
+        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            // Kill the emulator loop before Windows destroys the window
+            isRunning = false;
+        }
+        private void RunEmulatorEngine()
+        {
+            // The Game Boy processes exactly 70,224 T-Cycles per 60Hz frame.
+            // Eventually, we will track cycles here to sync the video and audio.
+
+            while (isRunning)
+            {
+                // 1. Execute the next instruction
+                cpu.Step();
+
+                // 2. (Future) If 70,224 cycles have passed:
+                //    - Tell SkiaSharp to draw the screen
+                //    - Thread.Sleep() to lock the speed to 60 FPS
             }
         }
     }

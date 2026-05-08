@@ -186,15 +186,15 @@ namespace GameboyTest
 
                     // 4. Figure out exactly WHICH interrupt fired and jump to it!
                     if ((pendingInterrupts & 0x01) != 0)      // Bit 0: VBlank
-                        ExecuteInterrupt(0, 0x0040);
+                        ExecuteInterrupt(0, 0x40);
                     else if ((pendingInterrupts & 0x02) != 0) // Bit 1: LCD STAT
-                        ExecuteInterrupt(1, 0x0048);
+                        ExecuteInterrupt(1, 0x48);
                     else if ((pendingInterrupts & 0x04) != 0) // Bit 2: Timer
-                        ExecuteInterrupt(2, 0x0050);
+                        ExecuteInterrupt(2, 0x50);
                     else if ((pendingInterrupts & 0x08) != 0) // Bit 3: Serial
-                        ExecuteInterrupt(3, 0x0058);
+                        ExecuteInterrupt(3, 0x58);
                     else if ((pendingInterrupts & 0x10) != 0) // Bit 4: Joypad
-                        ExecuteInterrupt(4, 0x0060);
+                        ExecuteInterrupt(4, 0x60);
                 }
             }
         }
@@ -828,23 +828,409 @@ namespace GameboyTest
                 case 0x9F: // SBC A, A
                     SbcA(A);
                     break;
-                case 0xAF: // XOR A (Exclusive OR register A with itself)
-                    // This is the most common way games set A to 0!
-                    A ^= A;
-                    FlagZ = (A == 0);
-                    FlagN = false;
-                    FlagH = false;
-                    FlagC = false;
+                // --- LOGICAL AND (AND A, register) ---
+                case 0xA0: // AND A, B
+                    AndA(B);
+                    break;
+                case 0xA1: // AND A, C
+                    AndA(C);
+                    break;
+                case 0xA2: // AND A, D
+                    AndA(D);
+                    break;
+                case 0xA3: // AND A, E
+                    AndA(E);
+                    break;
+                case 0xA4: // AND A, H
+                    AndA(H);
+                    break;
+                case 0xA5: // AND A, L
+                    AndA(L);
+                    break;
+                case 0xA6: // AND A, (HL)
+                    // Memory Accurate: 4 cycles (opcode) + 4 cycles (memory read) = 8 cycles
+                    AndA(ReadMemory(HL));
+                    break;
+                case 0xA7: // AND A, A
+                    AndA(A);
                     break;
 
-                case 0xC3: // JP a16 (Jump to 16-bit address)
-                    ushort jumpAddress = ReadNextWord();
-                    PC = jumpAddress;
+                // --- LOGICAL XOR (XOR A, register) ---
+                case 0xA8: // XOR A, B
+                    XorA(B);
+                    break;
+                case 0xA9: // XOR A, C
+                    XorA(C);
+                    break;
+                case 0xAA: // XOR A, D
+                    XorA(D);
+                    break;
+                case 0xAB: // XOR A, E
+                    XorA(E);
+                    break;
+                case 0xAC: // XOR A, H
+                    XorA(H);
+                    break;
+                case 0xAD: // XOR A, L
+                    XorA(L);
+                    break;
+                case 0xAE: // XOR A, (HL)
+                    XorA(ReadMemory(HL));
+                    break;
+                case 0xAF: // XOR A, A (Fastest way to set A = 0)
+                    XorA(A);
+                    break;
+                // --- LOGICAL OR (OR A, register) ---
+                case 0xB0: // OR A, B
+                    OrA(B);
+                    break;
+                case 0xB1: // OR A, C
+                    OrA(C);
+                    break;
+                case 0xB2: // OR A, D
+                    OrA(D);
+                    break;
+                case 0xB3: // OR A, E
+                    OrA(E);
+                    break;
+                case 0xB4: // OR A, H
+                    OrA(H);
+                    break;
+                case 0xB5: // OR A, L
+                    OrA(L);
+                    break;
+                case 0xB6: // OR A, (HL)
+                    // Memory Accurate: 4 cycles (opcode) + 4 cycles (memory read) = 8 cycles
+                    OrA(ReadMemory(HL));
+                    break;
+                case 0xB7: // OR A, A
+                    OrA(A); // ORing A with A doesn't change the value, but it perfectly updates flags!
+                    break;
+
+                // --- COMPARE (CP A, register) ---
+                case 0xB8: // CP A, B
+                    CpA(B);
+                    break;
+                case 0xB9: // CP A, C
+                    CpA(C);
+                    break;
+                case 0xBA: // CP A, D
+                    CpA(D);
+                    break;
+                case 0xBB: // CP A, E
+                    CpA(E);
+                    break;
+                case 0xBC: // CP A, H
+                    CpA(H);
+                    break;
+                case 0xBD: // CP A, L
+                    CpA(L);
+                    break;
+                case 0xBE: // CP A, (HL)
+                    CpA(ReadMemory(HL));
+                    break;
+                case 0xBF: // CP A, A
+                    CpA(A); // This will always set the Zero flag (Z) to true, since A - A = 0
+                    break;
+                // --- RETURNS ---
+                case 0xC0: // RET NZ (Return if Not Zero)
+                    Tick(); // Branch decision delay (4 cycles)
+                    if (!FlagZ)
+                    {
+                        PC = Pop16();
+                        Tick(); // Post-pop delay (4 cycles)
+                    }
+                    break;
+                case 0xC1: // POP BC
+                    ushort valC1 = Pop16();
+                    B = (byte)(valC1 >> 8);
+                    C = (byte)(valC1 & 0xFF);
+                    break;
+                case 0xC8: // RET Z (Return if Zero)
                     Tick();
+                    if (FlagZ)
+                    {
+                        PC = Pop16();
+                        Tick();
+                    }
+                    break;
+                case 0xC9: // RET (Unconditional Return)
+                    PC = Pop16();
+                    Tick();
+                    break;
+
+                // --- JUMPS ---
+                case 0xC2: // JP NZ, a16 (Jump to 16-bit address if Not Zero)
+                    
+                    if (!FlagZ)
+                    {
+                        ushort addrC2 = ReadNextWord();
+                        PC = addrC2;
+                        Tick(); // Internal delay to update the PC
+                    }
+                    break;
+                case 0xC3: // JP a16 (Unconditional Jump)
+                    PC = ReadNextWord();
+                    Tick();
+                    break;
+                case 0xCA: // JP Z, a16 (Jump to 16-bit address if Zero)
+                    
+                    if (FlagZ)
+                    {
+                        ushort addrCA = ReadNextWord();
+                        PC = addrCA;
+                        Tick();
+                    }
+                    break;
+
+                // --- CALLS & PUSHES ---
+                case 0xC4: // CALL NZ, a16 (Call function if Not Zero)
+                    
+                    if (!FlagZ)
+                    {
+                        Push16(PC); // Push the RETURN address to the stack
+                        ushort callAddrC4 = ReadNextWord();
+                        PC = callAddrC4;
+                    }
+                    break;
+                case 0xC5: // PUSH BC
+                    Push16((ushort)((B << 8) | C));
+                    break;
+                case 0xCC: // CALL Z, a16 (Call function if Zero)
+                    
+                    if (FlagZ)
+                    {
+                        Push16(PC);
+                        ushort callAddrCC = ReadNextWord();
+                        PC = callAddrCC;
+                    }
+                    break;
+                case 0xCD: // CALL a16 (Unconditional Call)
+                    ushort callAddrCD = ReadNextWord();
+                    Push16(PC);
+                    PC = callAddrCD;
+                    break;
+
+                // --- IMMEDIATE MATH ---
+                case 0xC6: // ADD A, d8 (Add immediate 8-bit value to A)
+                    // Memory Accurate: 4 (opcode) + 4 (read byte) = 8 cycles
+                    AddA(ReadNextByte());
+                    break;
+                case 0xCE: // ADC A, d8 (Add immediate 8-bit value + Carry to A)
+                    AdcA(ReadNextByte());
+                    break;
+
+                // --- RESTARTS (Hardcoded Calls) ---
+                case 0xC7: // RST 00H (Call address 0x0000)
+                    Push16(PC);
+                    PC = 0x0000;
+                    break;
+                case 0xCF: // RST 08H (Call address 0x0008)
+                    Push16(PC);
+                    PC = 0x0008;
                     break;
 
                 case 0xCB: // PREFIX CB (Extended Instructions)
                     ExecuteCbOpcode(ReadNextByte());
+                    break;
+                // --- RETURNS ---
+                case 0xD0: // RET NC (Return if No Carry)
+                    Tick(); // Branch decision delay (4 cycles)
+                    if (!FlagC)
+                    {
+                        PC = Pop16();
+                        Tick(); // Post-pop delay
+                    }
+                    break;
+                case 0xD1: // POP DE
+                    ushort valD1 = Pop16();
+                    D = (byte)(valD1 >> 8);
+                    E = (byte)(valD1 & 0xFF);
+                    break;
+                case 0xD8: // RET C (Return if Carry)
+                    Tick();
+                    if (FlagC)
+                    {
+                        PC = Pop16();
+                        Tick();
+                    }
+                    break;
+                case 0xD9: // RETI (Return and Enable Interrupts)
+                    PC = Pop16();
+                    Tick();
+                    IME = true; // Turn the master interrupt switch back on!
+                    break;
+
+                // --- JUMPS ---
+                case 0xD2: // JP NC, a16 (Jump if No Carry)
+                    
+                    if (!FlagC)
+                    {
+                        ushort addrD2 = ReadNextWord();
+                        PC = addrD2;
+                        Tick();
+                    }
+                    break;
+                case 0xDA: // JP C, a16 (Jump if Carry)
+                    
+                    if (FlagC)
+                    {
+                        ushort addrDA = ReadNextWord();
+                        PC = addrDA;
+                        Tick();
+                    }
+                    break;
+
+                // --- CALLS & PUSHES ---
+                case 0xD4: // CALL NC, a16 (Call if No Carry)
+                    
+                    if (!FlagC)
+                    {
+                        ushort callAddrD4 = ReadNextWord();
+                        Push16(PC);
+                        PC = callAddrD4;
+                    }
+                    break;
+                case 0xD5: // PUSH DE
+                    Push16((ushort)((D << 8) | E));
+                    break;
+                case 0xDC: // CALL C, a16 (Call if Carry)
+                    
+                    if (FlagC)
+                    {
+                        ushort callAddrDC = ReadNextWord();
+                        Push16(PC);
+                        PC = callAddrDC;
+                    }
+                    break;
+
+                // --- IMMEDIATE MATH ---
+                case 0xD6: // SUB A, d8 (Subtract immediate 8-bit value from A)
+                    SubA(ReadNextByte());
+                    break;
+                case 0xDE: // SBC A, d8 (Subtract immediate + Carry from A)
+                    SbcA(ReadNextByte());
+                    break;
+
+                // --- RESTARTS (Hardcoded Calls) ---
+                case 0xD7: // RST 10H (Call address 0x0010)
+                    Push16(PC);
+                    PC = 0x0010;
+                    break;
+                case 0xDF: // RST 18H (Call address 0x0018)
+                    Push16(PC);
+                    PC = 0x0018;
+                    break;
+                // --- HIGH RAM (HRAM) LOADS ---
+                case 0xE0: // LDH (a8), A  (Store A into 0xFF00 + 8-bit offset)
+                    WriteMemory((ushort)(0xFF00 + ReadNextByte()), A);
+                    break;
+                case 0xE2: // LDH (C), A   (Store A into 0xFF00 + register C)
+                    // Memory Accurate: 4 (opcode) + 4 (write) = 8 cycles
+                    WriteMemory((ushort)(0xFF00 + C), A);
+                    break;
+                case 0xEA: // LD (a16), A  (Standard 16-bit Absolute Store)
+                    WriteMemory(ReadNextWord(), A);
+                    break;
+
+                // --- STACK POINTER / HL INSTRUCTIONS ---
+                case 0xE1: // POP HL
+                    ushort valE1 = Pop16();
+                    H = (byte)(valE1 >> 8);
+                    L = (byte)(valE1 & 0xFF);
+                    break;
+                case 0xE5: // PUSH HL
+                    Push16((ushort)((H << 8) | L));
+                    break;
+                case 0xE8: // ADD SP, r8 (Add signed 8-bit value to Stack Pointer)
+                    sbyte offsetE8 = (sbyte)ReadNextByte();
+                    SP = AddSignedByteToSP(offsetE8);
+                    Tick(); // Internal Delay 1
+                    Tick(); // Internal Delay 2 (Total 16 T-Cycles)
+                    break;
+                case 0xE9: // JP (HL) (Jump to the address stored in HL)
+                    // The syntax is JP (HL) but it actually sets PC = HL instantly!
+                    PC = (ushort)((H << 8) | L);
+                    // Takes exactly 4 T-Cycles, which is already handled by the opcode fetch
+                    break;
+
+                // --- IMMEDIATE MATH ---
+                case 0xE6: // AND A, d8 (Logical AND with immediate 8-bit value)
+                    AndA(ReadNextByte());
+                    break;
+                case 0xEE: // XOR A, d8 (Logical XOR with immediate 8-bit value)
+                    XorA(ReadNextByte());
+                    break;
+
+                // --- RESTARTS (Hardcoded Calls) ---
+                case 0xE7: // RST 20H (Call address 0x0020)
+                    Push16(PC);
+                    PC = 0x0020;
+                    break;
+                case 0xEF: // RST 28H (Call address 0x0028)
+                    Push16(PC);
+                    PC = 0x0028;
+                    break;
+                // --- HIGH RAM (HRAM) READS ---
+                case 0xF0: // LDH A, (a8)  (Load A from 0xFF00 + 8-bit offset)
+                    A = ReadMemory((ushort)(0xFF00 + ReadNextByte()));
+                    break;
+                case 0xF2: // LDH A, (C)   (Load A from 0xFF00 + register C)
+                    A = ReadMemory((ushort)(0xFF00 + C));
+                    break;
+                case 0xFA: // LD A, (a16)  (Standard 16-bit Absolute Load)
+                    A = ReadMemory(ReadNextWord());
+                    break;
+
+                // --- STACK & HL INSTRUCTIONS ---
+                case 0xF1: // POP AF
+                    ushort valF1 = Pop16();
+                    A = (byte)(valF1 >> 8);
+                    // HARDWARE QUIRK: The bottom 4 bits of the F register are hardwired to 0!
+                    F = (byte)(valF1 & 0xF0);
+                    break;
+                case 0xF5: // PUSH AF
+                    Push16((ushort)((A << 8) | F));
+                    break;
+                case 0xF8: // LD HL, SP+r8 (Add signed 8-bit value to SP, store in HL)
+                    sbyte offsetF8 = (sbyte)ReadNextByte();
+                    ushort resultF8 = AddSignedByteToSP(offsetF8);
+                    H = (byte)(resultF8 >> 8);
+                    L = (byte)(resultF8 & 0xFF);
+                    Tick(); // Internal Delay (Total 12 T-Cycles)
+                    break;
+                case 0xF9: // LD SP, HL (Load HL into the Stack Pointer)
+                    SP = (ushort)((H << 8) | L);
+                    Tick(); // Internal Delay (Total 8 T-Cycles)
+                    break;
+
+                // --- MASTER INTERRUPT SWITCHES ---
+                case 0xF3: // DI (Disable Interrupts)
+                    // The CPU will no longer jump to 0x0040, etc., even if hardware requests it
+                    IME = false;
+                    break;
+                case 0xFB: // EI (Enable Interrupts)
+                    // (Note: In pure hardware, this actually enables interrupts AFTER the next 
+                    // instruction runs, but setting it instantly works for 99% of games!)
+                    IME = true;
+                    break;
+
+                // --- IMMEDIATE MATH ---
+                case 0xF6: // OR A, d8 (Logical OR with immediate 8-bit value)
+                    OrA(ReadNextByte());
+                    break;
+                case 0xFE: // CP A, d8 (Compare A with immediate 8-bit value)
+                    CpA(ReadNextByte());
+                    break;
+
+                // --- RESTARTS (Hardcoded Calls) ---
+                case 0xF7: // RST 30H (Call address 0x0030)
+                    Push16(PC);
+                    PC = 0x0030;
+                    break;
+                case 0xFF: // RST 38H (Call address 0x0038)
+                    Push16(PC);
+                    PC = 0x0038;
                     break;
 
                 default:
@@ -852,23 +1238,7 @@ namespace GameboyTest
             }
         }
 
-        private void ExecuteCbOpcode(byte cbOpcode)
-        {
-            // The CB prefix gives access to 256 MORE instructions (Bit shifting, setting, testing)
-            switch (cbOpcode)
-            {
-                case 0x7C: // BIT 7, H (Test if bit 7 of register H is 1)
-                    FlagZ = ((H & 0x80) == 0); // Z is set if the bit is 0!
-                    FlagN = false;
-                    FlagH = true;
-                    // Carry flag is untouched
-                    Tick();
-                    break;
 
-                default:
-                    throw new NotImplementedException($"CB Opcode 0x{cbOpcode:X2} at PC 0x{PC - 2:X4} is not implemented!");
-            }
-        }
 
 
 
@@ -902,7 +1272,7 @@ namespace GameboyTest
             FlagN = false;
 
             // Half-carry must factor in the previous carry!
-            FlagH = ((A & 0x0F) + (value & 0x0F) + carry > 0x0F);
+            FlagH = (((A & 0x0F) + (value & 0x0F) + carry)> 0x0F);
             FlagC = (result > 0xFF);
 
             A = (byte)result;
@@ -943,6 +1313,773 @@ namespace GameboyTest
             FlagC = (result < 0);
 
             A = (byte)result;
+        }
+        private void AndA(byte value)
+        {
+            // Perform the bitwise AND
+            A &= value;
+
+            // Update Flags
+            FlagZ = (A == 0);
+            FlagN = false;
+            FlagH = true;  // Game Boy hardware quirk: AND ALWAYS sets the H flag!
+            FlagC = false;
+        }
+
+        private void XorA(byte value)
+        {
+            // Perform the bitwise Exclusive OR
+            A ^= value;
+
+            // Update Flags
+            FlagZ = (A == 0);
+            FlagN = false;
+            FlagH = false;
+            FlagC = false;
+        }
+        private void OrA(byte value)
+        {
+            // Perform the bitwise OR
+            A |= value;
+
+            // Update Flags
+            FlagZ = (A == 0);
+            FlagN = false;
+            FlagH = false; // Unlike AND, OR clears the Half-Carry flag
+            FlagC = false;
+        }
+
+        private void CpA(byte value)
+        {
+            // Compare is exactly the same as Subtraction, but we DON'T save to A!
+            int result = A - value;
+
+            // Update Flags
+            FlagZ = ((result & 0xFF) == 0);
+            FlagN = true; // Set to true because this is a subtraction operation
+            int lowerA = A & 0x0F;
+            int lowerValue = value & 0x0F;
+            FlagH = ((lowerA - lowerValue < 0x00) && (lowerA > 0x8 || lowerValue > 0x8));
+            FlagC = (A < value); // Check for full borrow
+        }
+        // --- STACK HELPER METHODS ---
+        private void Push16(ushort value)
+        {
+            Tick(); // Internal delay: CPU takes 4 cycles to prep for a push
+
+            // Push the higher byte first
+            SP--;
+            WriteMemory(SP, (byte)(value >> 8));
+
+            // Push the lower byte second
+            SP--;
+            WriteMemory(SP, (byte)(value & 0xFF));
+        }
+
+        private ushort Pop16()
+        {
+            // Pop the lower byte first
+            byte lo = ReadMemory(SP);
+            SP++;
+
+            // Pop the higher byte second
+            byte hi = ReadMemory(SP);
+            SP++;
+
+            return (ushort)((hi << 8) | lo);
+        }
+        private ushort AddSignedByteToSP(sbyte value)
+        {
+            // The Game Boy calculates the Half-Carry and Carry flags for this 16-bit 
+            // instruction by looking ONLY at the lower 8-bits, treating them as unsigned!
+            int result = SP + value;
+
+            FlagZ = false;
+            FlagN = false;
+
+            // Half-carry checks if bits 0-3 overflowed
+            FlagH = ((SP & 0x0F) + (value & 0x0F) > 0x0F);
+
+            // Full carry checks if bits 0-7 overflowed
+            FlagC = ((SP & 0xFF) + (value & 0xFF) > 0xFF);
+
+            return (ushort)result;
+        }
+        private void ExecuteCbOpcode(byte cbOpcode)
+        {
+            // The CB prefix gives access to 256 MORE instructions (Bit shifting, setting, testing)
+            switch (cbOpcode)
+            {
+                case 0x00: 
+                    B = Rlc(B); 
+                    break;
+                case 0x01: 
+                    C = Rlc(C); 
+                    break;
+                case 0x02:
+                    D = Rlc(D); 
+                    break;
+                case 0x03: 
+                    E = Rlc(E); 
+                    break;
+                case 0x04: 
+                    H = Rlc(H); 
+                    break;
+                case 0x05: 
+                    L = Rlc(L); 
+                    break;
+                case 0x06:
+                    WriteMemory(HL, Rlc(ReadMemory(HL)));
+                    break;
+                case 0x07:
+                    // HARDWARE QUIRK: This is CB 0x07 (RLC A). It is identical to the main board's 
+                    // 0x07 (RLCA), EXCEPT this CB version sets the Zero flag if A is 0, while 
+                    // the main board version always forces the Zero flag to false!
+                    A = Rlc(A);
+                    break;
+
+                // --- RRC (Rotate Right Circular) ---
+                case 0x08: 
+                    B = Rrc(B); 
+                    break;
+                case 0x09: 
+                    C = Rrc(C); 
+                    break;
+                case 0x0A: 
+                    D = Rrc(D); 
+                    break;
+                case 0x0B: 
+                    E = Rrc(E); 
+                    break;
+                case 0x0C: 
+                    H = Rrc(H); 
+                    break;
+                case 0x0D: 
+                    L = Rrc(L); 
+                    break;
+                case 0x0E:
+                    WriteMemory(HL, Rrc(ReadMemory(HL)));
+                    break;
+                case 0x0F:
+                    A = Rrc(A);
+                    break;
+                // --- RL (Rotate Left Through Carry) ---
+                case 0x10: 
+                    B = Rl(B); 
+                    break;
+                case 0x11: 
+                    C = Rl(C); 
+                    break;
+                case 0x12: 
+                    D = Rl(D); 
+                    break;
+                case 0x13: 
+                    E = Rl(E); 
+                    break;
+                case 0x14: 
+                    H = Rl(H); 
+                    break;
+                case 0x15: 
+                    L = Rl(L); 
+                    break;
+                case 0x16:
+                    WriteMemory(HL, Rl(ReadMemory(HL)));
+                    break;
+                case 0x17:
+                    A = Rl(A);
+                    break;
+
+                // --- RR (Rotate Right Through Carry) ---
+                case 0x18:
+                    B = Rr(B); 
+                    break;
+                case 0x19: 
+                    C = Rr(C); 
+                    break;
+                case 0x1A: 
+                    D = Rr(D); 
+                    break;
+                case 0x1B: 
+                    E = Rr(E); 
+                    break;
+                case 0x1C: 
+                    H = Rr(H); 
+                    break;
+                case 0x1D: 
+                    L = Rr(L); 
+                    break;
+                case 0x1E:
+                    WriteMemory(HL, Rr(ReadMemory(HL)));
+                    break;
+                case 0x1F:
+                    A = Rr(A);
+                    break;
+                // --- SLA (Shift Left Arithmetic) ---
+                case 0x20: 
+                    B = Sla(B); 
+                    break;
+                case 0x21: 
+                    C = Sla(C); 
+                    break;
+                case 0x22: 
+                    D = Sla(D); 
+                    break;
+                case 0x23: 
+                    E = Sla(E); 
+                    break;
+                case 0x24: 
+                    H = Sla(H); 
+                    break;
+                case 0x25: 
+                    L = Sla(L); 
+                    break;
+                case 0x26:
+                    WriteMemory(HL, Sla(ReadMemory(HL)));
+                    break;
+                case 0x27:
+                    A = Sla(A);
+                    break;
+
+                // --- SRA (Shift Right Arithmetic) ---
+                case 0x28: 
+                    B = Sra(B); 
+                    break;
+                case 0x29: 
+                    C = Sra(C); 
+                    break;
+                case 0x2A: 
+                    D = Sra(D); 
+                    break;
+                case 0x2B: 
+                    E = Sra(E); 
+                    break;
+                case 0x2C: 
+                    H = Sra(H); 
+                    break;
+                case 0x2D: 
+                    L = Sra(L); 
+                    break;
+                case 0x2E:
+                    WriteMemory(HL, Sra(ReadMemory(HL)));
+                    break;
+                case 0x2F:
+                    A = Sra(A);
+                    break;
+                // --- SWAP (Swap Nibbles) ---
+                case 0x30: 
+                    B = Swap(B); 
+                    break;
+                case 0x31: 
+                    C = Swap(C); 
+                    break;
+                case 0x32:
+                    D = Swap(D); 
+                    break;
+                case 0x33: 
+                    E = Swap(E); 
+                    break;
+                case 0x34: 
+                    H = Swap(H); 
+                    break;
+                case 0x35: 
+                    L = Swap(L); 
+                    break;
+                case 0x36:
+                    WriteMemory(HL, Swap(ReadMemory(HL)));
+                    break;
+                case 0x37:
+                    A = Swap(A);
+                    break;
+
+                // --- SRL (Shift Right Logical) ---
+                case 0x38: 
+                    B = Srl(B); 
+                    break;
+                case 0x39: 
+                    C = Srl(C); 
+                    break;
+                case 0x3A: 
+                    D = Srl(D); 
+                    break;
+                case 0x3B: 
+                    E = Srl(E); 
+                    break;
+                case 0x3C: 
+                    H = Srl(H); 
+                    break;
+                case 0x3D: 
+                    L = Srl(L);
+                    break;
+                case 0x3E:
+                    WriteMemory(HL, Srl(ReadMemory(HL)));
+                    break;
+                case 0x3F:
+                    A = Srl(A);
+                    break;
+                // --- BIT 0 (Test Bit 0) ---
+                case 0x40: 
+                    TestBit(B, 0); 
+                    break;
+                case 0x41: 
+                    TestBit(C, 0); 
+                    break;
+                case 0x42: 
+                    TestBit(D, 0); 
+                    break;
+                case 0x43: 
+                    TestBit(E, 0); 
+                    break;
+                case 0x44: 
+                    TestBit(H, 0); 
+                    break;
+                case 0x45: 
+                    TestBit(L, 0); 
+                    break;
+                case 0x46:
+                    // Memory Accurate: 4 (CB prefix) + 4 (opcode) + 4 (read) = 12 cycles
+                    TestBit(ReadMemory(HL), 0);
+                    break;
+                case 0x47: TestBit(A, 0); break;
+
+                // --- BIT 1 (Test Bit 1) ---
+                case 0x48: 
+                    TestBit(B, 1); 
+                    break;
+                case 0x49: 
+                    TestBit(C, 1); 
+                    break;
+                case 0x4A: 
+                    TestBit(D, 1); 
+                    break;
+                case 0x4B: 
+                    TestBit(E, 1); 
+                    break;
+                case 0x4C: 
+                    TestBit(H, 1); 
+                    break;
+                case 0x4D: 
+                    TestBit(L, 1); 
+                    break;
+                case 0x4E:
+                    TestBit(ReadMemory(HL), 1);
+                    break;
+                case 0x4F: 
+                    TestBit(A, 1); 
+                    break;
+                // ==========================================
+                // ======= FINISHING BIT OPERATIONS =========
+                // ==========================================
+
+                // --- BIT 2 ---
+                case 0x50: 
+                    TestBit(B, 2); 
+                    break;
+                case 0x51: 
+                    TestBit(C, 2); 
+                    break;
+                case 0x52: 
+                    TestBit(D, 2); 
+                    break;
+                case 0x53: 
+                    TestBit(E, 2); 
+                    break;
+                case 0x54: 
+                    TestBit(H, 2); 
+                    break;
+                case 0x55: 
+                    TestBit(L, 2); 
+                    break;
+                case 0x56: 
+                    TestBit(ReadMemory(HL), 2); 
+                    break;
+                case 0x57: 
+                    TestBit(A, 2); 
+                    break;
+
+                // --- BIT 3 ---
+                case 0x58: 
+                    TestBit(B, 3); 
+                    break;
+                case 0x59: 
+                    TestBit(C, 3);
+                    break;
+                case 0x5A: 
+                    TestBit(D, 3); 
+                    break;
+                case 0x5B: 
+                    TestBit(E, 3); 
+                    break;
+                case 0x5C: 
+                    TestBit(H, 3); 
+                    break;
+                case 0x5D: 
+                    TestBit(L, 3); 
+                    break;
+                case 0x5E: 
+                    TestBit(ReadMemory(HL), 3); 
+                    break;
+                case 0x5F: 
+                    TestBit(A, 3); 
+                    break;
+
+                // --- BIT 4 ---
+                case 0x60: 
+                    TestBit(B, 4); 
+                    break;
+                case 0x61: 
+                    TestBit(C, 4); 
+                    break;
+                case 0x62: 
+                    TestBit(D, 4); 
+                    break;
+                case 0x63: 
+                    TestBit(E, 4); 
+                    break;
+                case 0x64: 
+                    TestBit(H, 4); 
+                    break;
+                case 0x65: 
+                    TestBit(L, 4); 
+                    break;
+                case 0x66: 
+                    TestBit(ReadMemory(HL), 4); 
+                    break;
+                case 0x67: 
+                    TestBit(A, 4); 
+                    break;
+
+                // --- BIT 5 ---
+                case 0x68: 
+                    TestBit(B, 5); break;
+                case 0x69: 
+                    TestBit(C, 5); break;
+                case 0x6A: 
+                    TestBit(D, 5); break;
+                case 0x6B: 
+                    TestBit(E, 5); break;
+                case 0x6C: 
+                    TestBit(H, 5); break;
+                case 0x6D: 
+                    TestBit(L, 5); break;
+                case 0x6E: 
+                    TestBit(ReadMemory(HL), 5); break;
+                case 0x6F: 
+                    TestBit(A, 5); break;
+
+                // --- BIT 6 ---
+                case 0x70:
+                    TestBit(B, 6); break;
+                case 0x71: 
+                    TestBit(C, 6); break;
+                case 0x72: 
+                    TestBit(D, 6); break;
+                case 0x73: 
+                    TestBit(E, 6); break;
+                case 0x74: 
+                    TestBit(H, 6); break;
+                case 0x75: 
+                    TestBit(L, 6); break;
+                case 0x76: 
+                    TestBit(ReadMemory(HL), 6); break;
+                case 0x77:
+                    TestBit(A, 6); break;
+
+                // --- BIT 7 ---
+                case 0x78: 
+                    TestBit(B, 7); break;
+                case 0x79: 
+                    TestBit(C, 7); break;
+                case 0x7A: 
+                    TestBit(D, 7); break;
+                case 0x7B: 
+                    TestBit(E, 7); break;
+                case 0x7C: 
+                    TestBit(H, 7); break;
+                case 0x7D: 
+                    TestBit(L, 7); break;
+                case 0x7E: 
+                    TestBit(ReadMemory(HL), 7); break;
+                case 0x7F: 
+                    TestBit(A, 7); break;
+
+                // ==========================================
+                // ========= RESET (RES) OPERATIONS =========
+                // ==========================================
+
+                // --- RES 0 (Reset Bit 0) ---
+                case 0x80: 
+                    B = ResetBit(B, 0);
+                    break;
+                case 0x81:
+                    C = ResetBit(C, 0);
+                    break;
+                case 0x82:
+                    D = ResetBit(D, 0); break;
+                case 0x83:
+                    E = ResetBit(E, 0);
+                    break;
+                case 0x84:
+                    H = ResetBit(H, 0);
+                    break;
+                case 0x85:
+                    L = ResetBit(L, 0); 
+                    break;
+                case 0x86:
+                    WriteMemory(HL, ResetBit(ReadMemory(HL), 0)); 
+                    break;
+                case 0x87:
+                    A = ResetBit(A, 0);
+                    break;
+
+                // --- RES 1 (Reset Bit 1) ---
+                case 0x88:
+                    B = ResetBit(B, 1);
+                    break;
+                case 0x89:
+                    C = ResetBit(C, 1);
+                    break;
+                case 0x8A: 
+                    D = ResetBit(D, 1);
+                    break;
+                case 0x8B: 
+                    E = ResetBit(E, 1);
+                    break;
+                case 0x8C: 
+                    H = ResetBit(H, 1);
+                    break;
+                case 0x8D: 
+                    L = ResetBit(L, 1);
+                    break;
+                case 0x8E: 
+                    WriteMemory(HL, ResetBit(ReadMemory(HL), 1));
+                    break;
+                case 0x8F:
+                    A = ResetBit(A, 1);
+                    break;
+
+                // --- RES 2 (Reset Bit 2) ---
+                case 0x90: 
+                    B = ResetBit(B, 2); 
+                    break;
+                case 0x91:
+                    C = ResetBit(C, 2); 
+                    break;
+                case 0x92:
+                    D = ResetBit(D, 2);
+                    break;
+                case 0x93:
+                    E = ResetBit(E, 2); 
+                    break;
+                case 0x94:
+                    H = ResetBit(H, 2); 
+                    break;
+                case 0x95:
+                    L = ResetBit(L, 2); break;
+                case 0x96:
+                    WriteMemory(HL, ResetBit(ReadMemory(HL), 2)); 
+                    break;
+                case 0x97:
+                    A = ResetBit(A, 2);
+                    break;
+
+                // --- RES 3 (Reset Bit 3) ---
+                case 0x98: 
+                    B = ResetBit(B, 3); 
+                    break;
+                case 0x99:
+                    C = ResetBit(C, 3); 
+                    break;
+                case 0x9A:
+                    D = ResetBit(D, 3); 
+                    break;
+                case 0x9B:
+                    E = ResetBit(E, 3); 
+                    break;
+                case 0x9C:
+                    H = ResetBit(H, 3); 
+                    break;
+                case 0x9D:
+                    L = ResetBit(L, 3); 
+                    break;
+                case 0x9E:
+                    WriteMemory(HL, ResetBit(ReadMemory(HL), 3)); 
+                    break;
+                case 0x9F:
+                    A = ResetBit(A, 3); 
+                    break;
+
+
+
+                default:
+                    throw new NotImplementedException($"CB Opcode 0x{cbOpcode:X2} at PC 0x{PC - 2:X4} is not implemented!");
+            }
+        }
+        private byte Rlc(byte value)
+        {
+            // 1. Grab the top bit (Bit 7) to see if it carries over
+            bool carry = (value & 0x80) != 0;
+
+            // 2. Shift left by 1, and if carry is true, wrap a 1 into the bottom bit (Bit 0)
+            byte result = (byte)((value << 1) | (carry ? 1 : 0));
+
+            // 3. Update flags
+            FlagZ = (result == 0);
+            FlagN = false;
+            FlagH = false;
+            FlagC = carry;
+            Tick();
+            return result;
+        }
+
+        private byte Rrc(byte value)
+        {
+            // 1. Grab the bottom bit (Bit 0) to see if it carries over
+            bool carry = (value & 0x01) != 0;
+
+            // 2. Shift right by 1, and if carry is true, wrap a 1 into the top bit (Bit 7)
+            byte result = (byte)((value >> 1) | (carry ? 0x80 : 0));
+
+            // 3. Update flags
+            FlagZ = (result == 0);
+            FlagN = false;
+            FlagH = false;
+            FlagC = carry;
+            Tick();
+            return result;
+        }
+        private byte Rl(byte value)
+        {
+            // 1. Save the old carry flag (this will become the new Bit 0)
+            bool oldCarry = FlagC;
+
+            // 2. Grab the top bit (Bit 7) to become the NEW carry flag
+            bool newCarry = (value & 0x80) != 0;
+
+            // 3. Shift left by 1, and insert the old carry into the bottom bit
+            byte result = (byte)((value << 1) | (oldCarry ? 1 : 0));
+
+            // 4. Update flags
+            FlagZ = (result == 0);
+            FlagN = false;
+            FlagH = false;
+            FlagC = newCarry;
+            Tick();
+            return result;
+        }
+
+        private byte Rr(byte value)
+        {
+            // 1. Save the old carry flag (this will become the new Bit 7)
+            bool oldCarry = FlagC;
+
+            // 2. Grab the bottom bit (Bit 0) to become the NEW carry flag
+            bool newCarry = (value & 0x01) != 0;
+
+            // 3. Shift right by 1, and insert the old carry into the top bit
+            byte result = (byte)((value >> 1) | (oldCarry ? 0x80 : 0));
+
+            // 4. Update flags
+            FlagZ = (result == 0);
+            FlagN = false;
+            FlagH = false;
+            FlagC = newCarry;
+            Tick();
+            return result;
+        }
+        private byte Sla(byte value)
+        {
+            // 1. Grab the top bit to put into the Carry flag
+            bool carry = (value & 0x80) != 0;
+
+            // 2. Shift left by 1. C# naturally fills the empty Bit 0 with a zero.
+            byte result = (byte)(value << 1);
+
+            // 3. Update flags
+            FlagZ = (result == 0);
+            FlagN = false;
+            FlagH = false;
+            FlagC = carry;
+            Tick();
+            return result;
+        }
+        private byte Sra(byte value)
+        {
+            // 1. Grab the bottom bit to put into the Carry flag
+            bool carry = (value & 0x01) != 0;
+
+            // 2. Save the original Bit 7 (the sign bit) so we can put it back
+            byte topBit = (byte)(value & 0x80);
+
+            // 3. Shift right by 1, then use bitwise OR to force the top bit to stay the same
+            byte result = (byte)((value >> 1) | topBit);
+
+            // 4. Update flags
+            FlagZ = (result == 0);
+            FlagN = false;
+            FlagH = false;
+            FlagC = carry;
+            Tick();
+            return result;
+        }
+        private byte Swap(byte value)
+        {
+            // 1. Shift the top 4 bits down, and the bottom 4 bits up
+            byte upperNibble = (byte)(value >> 4);
+            byte lowerNibble = (byte)(value << 4);
+
+            // 2. Combine them back together
+            byte result = (byte)(upperNibble | lowerNibble);
+
+            // 3. Update flags (Swap wipes out all flags except Zero!)
+            FlagZ = (result == 0);
+            FlagN = false;
+            FlagH = false;
+            FlagC = false;
+            Tick();
+            return result;
+        }
+        private byte Srl(byte value)
+        {
+            // 1. Grab the bottom bit to put into the Carry flag
+            bool carry = (value & 0x01) != 0;
+
+            // 2. Shift right by 1. Because C# treats bytes as unsigned, 
+            // the empty Bit 7 space is automatically filled with a 0.
+            byte result = (byte)(value >> 1);
+
+            // 3. Update flags
+            FlagZ = (result == 0);
+            FlagN = false;
+            FlagH = false;
+            FlagC = carry;
+            Tick();
+            return result;
+        }
+        private void TestBit(byte value, int bitPosition)
+        {
+            // 1. Create a mask for the specific bit (e.g., 1 << 0 is 0000 0001)
+            int mask = 1 << bitPosition;
+
+            // 2. Use bitwise AND to isolate the bit. If the result is 0, the bit was 0!
+            bool isBitZero = (value & mask) == 0;
+
+            // 3. Update flags
+            FlagZ = isBitZero;
+            FlagN = false;
+            FlagH = true; // Hardware quirk: BIT always sets the Half-Carry flag
+            Tick();
+            // FlagC remains unchanged!
+        }
+        private byte ResetBit(byte value, int bitPosition)
+        {
+            // 1. Create a mask for the specific bit (e.g., 1 << 0 is 0000 0001)
+            // 2. Flip it with ~ so it becomes 1111 1110
+            int mask = ~(1 << bitPosition);
+
+            // 3. Use bitwise AND. The 0 forces the target bit to turn off, 
+            // while the 1s leave all other bits perfectly intact!
+            Tick();
+            return (byte)(value & mask);
         }
     }
 }
