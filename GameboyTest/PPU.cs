@@ -9,22 +9,16 @@ namespace GameboyTest
     public class PPU
     {
         // --- MEMORY REGISTERS ---
-        public byte LCDC { get; set; } // 0xFF40
-        public byte STAT { get; set; } // 0xFF41
-        public byte LY { get; set; }   // 0xFF44
-        public byte LYC { get; set; }  // 0xFF45
+        public byte LCDC { get => io[0x40]; set => io[0x40] = value; } // 0xFF40
+        public byte STAT { get => io[0x41]; set => io[0x41] = value; } // 0xFF41
+        public byte LY { get => io[0x44]; set => io[0x44] = value; }   // 0xFF44
+        public byte LYC { get => io[0x4B]; set => io[0x45] = value; }  // 0xFF45
                                        // --- VRAM & OAM (Super Fast Direct Access) ---
         public byte[] VRAM { get; private set; } = new byte[8192]; // 0x8000 - 0x9FFF
         public byte[] OAM { get; private set; } = new byte[160];   // 0xFE00 - 0xFE9F
 
         // --- HARDWARE REGISTERS ---
-        public byte SCY { get; set; }  // 0xFF42
-        public byte SCX { get; set; }  // 0xFF43
-        public byte WY { get; set; }   // 0xFF4A
-        public byte WX { get; set; }   // 0xFF4B
-        public byte BGP { get; set; }  // 0xFF47 (Background Palette)
-        public byte OBP0 { get; set; } // 0xFF48 (Sprite Palette 0)
-        public byte OBP1 { get; set; } // 0xFF49 (Sprite Palette 1)
+
 
         // --- SKIASHARP COLORS (AARRGGBB) ---
         // Your exact RGB colors: (202, 220, 159), (139, 172, 15), (48, 98, 48), (15, 56, 15)
@@ -60,6 +54,36 @@ namespace GameboyTest
         private byte[] io { get; set; }
 
         // A callback to tell your main SkiaSharp window: "The frame is ready, draw it!"
+        public byte SCY { 
+            get => io[0x42]; // 0xFF42
+            set => io[0x42] = value;
+        }
+        public byte SCX
+        {
+            get => io[0x43];
+            set => io[0x43] = value;
+        }// 0xFF43
+        public byte WY
+        {
+            get => io[0x4A]; // 0xFF4A
+            set => io[0x4A] = value;
+        }   // 0xFF4A
+        public byte WX
+        {
+            get => io[0x4B]; // 0xFF4B
+            set => io[0x4B] = value;
+        }   
+        public byte BGP
+        {
+            get => io[0x47]; // 0xFF47
+            set => io[0x47] = value;
+        }     // 0xFF47 (Background Palette)
+        public byte OBP0
+        {
+            get => io[0x48]; // 0xFF4B
+            set => io[0x48] = value;
+        }   // 0xFF48 (Sprite Palette 0)
+        public byte OBP1 { get => io[0x4B]; set => io[0x4B] = value; } // 0xFF49 (Sprite Palette 1)
         private Action requestFrameRender;
         public PPU(Action lcdInterrupt, Action vBlankInterrupt, Action renderCallback, byte[] io, byte[] vram, byte[] oam)
         {
@@ -90,7 +114,7 @@ namespace GameboyTest
             }
 
             scanlineCounter -= cycles;
-
+            
             // If we finished a full horizontal line...
             if (scanlineCounter <=0)
             {
@@ -109,6 +133,10 @@ namespace GameboyTest
                 else if (LY > 153)
                 {
                     LY = 0; // Reset back to the top of the screen
+                }
+                else if (LY < 144)
+                {
+                    DrawScanline();
                 }
             }
 
@@ -189,6 +217,7 @@ namespace GameboyTest
             if (currentMode == 3 && newMode == 0)
             {
                 DrawScanline();
+                throw new Exception("Scanline drawn!"); // For debugging, you can remove this later
             }
         }
         private void DrawScanline()

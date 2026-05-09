@@ -159,7 +159,7 @@ namespace GameboyTest
                             
                             // Optional: provide path to a blargg test text file
                             string blarggValidationPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "blargg9.txt");
-                            cpu.Logger.Start(logPath, blarggValidationPath);
+                            //cpu.Logger.Start(logPath, blarggValidationPath);
 
                             // Add a temporary line to write a test string immediately
                             isRunning = false;
@@ -187,10 +187,10 @@ namespace GameboyTest
         {
             // Kill the emulator loop before Windows destroys the window
             isRunning = false;
-            if (cpu != null)
+            /*if (cpu != null)
             {
                 cpu.Logger.Stop();
-            }
+            }*/
         }
         private void RunEmulatorEngine()
         {

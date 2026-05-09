@@ -134,15 +134,21 @@ namespace GameboyTest
         public void Step()
         {
             // Store the PC before we attempt to execute
-            Logger.LogState(this,bus);
-            ushort currentPC = PC;
+            //Logger.LogState(this,bus);
+            //ushort currentPC = PC;
 
-                CheckInterrupts();
+                
                 // Add to a small history buffer (keep the last 10 steps)
-                UpdateHistory(currentPC);
+                //UpdateHistory(currentPC);
 
-                byte opcode = ReadNextByte();
-                ExecuteOpcode(opcode);
+            byte opcode = ReadNextByte();
+            if (Halted)
+            {
+                PC--;
+
+            }
+            ExecuteOpcode(opcode);
+            CheckInterrupts();
 
             /*catch (Exception ex)
             {
@@ -518,6 +524,14 @@ namespace GameboyTest
                         Tick();
                     }
                     break;
+                case 0x38: // JR C, r8 (Jump Relative if Zero)
+                    sbyte offsets = (sbyte)ReadNextByte();
+                    if (FlagC)
+                    {
+                        PC = (ushort)(PC + offsets);
+                        Tick();
+                    }
+                    break;
                 case 0x09: // ADD HL, HL
                     int results = HL + BC;
                     FlagN = false;
@@ -532,6 +546,14 @@ namespace GameboyTest
                     FlagH = ((HL & 0xFFF) + (HL & 0xFFF)) > 0xFFF;
                     FlagC = result29 > 0xFFFF;
                     HL = (ushort)result29;
+                    Tick();
+                    break;
+                case 0x39: // ADD HL, HL
+                    int result39 = HL + SP;
+                    FlagN = false;
+                    FlagH = ((HL & 0xFFF) + (SP & 0xFFF)) > 0xFFF;
+                    FlagC = result39 > 0xFFFF;
+                    HL = (ushort)result39;
                     Tick();
                     break;
 
@@ -549,6 +571,10 @@ namespace GameboyTest
 
                 case 0x2B: // DEC HL
                     HL--;
+                    Tick();
+                    break;
+                case 0x3B: // DEC HL
+                    SP--;
                     Tick();
                     break;
 
@@ -1099,6 +1125,8 @@ namespace GameboyTest
                         return;// Internal delay to update the PC
                     }
                     PC += 2;
+                    Tick();
+                    Tick();
                     break;
                 case 0xC3: // JP a16 (Unconditional Jump)
                     PC = ReadNextWord();
@@ -1115,6 +1143,8 @@ namespace GameboyTest
                         return;
                     }
                     PC += 2;
+                    Tick();
+                    Tick();
                     break;
 
                 // --- CALLS & PUSHES ---
@@ -1131,6 +1161,8 @@ namespace GameboyTest
 
                     }
                     PC += 2;
+                    Tick();
+                    Tick();
                     break;
                 case 0xC5: // PUSH BC
                     Push16((ushort)((B << 8) | C));
@@ -1146,6 +1178,8 @@ namespace GameboyTest
                         return;
                     }
                     PC += 2;
+                    Tick();
+                    Tick();
                     break;
                 case 0xCD: // CALL a16 (Unconditional Call)
                     ushort callAddrCD = ReadNextWord();
@@ -1216,6 +1250,8 @@ namespace GameboyTest
                         return;
                     }
                     PC += 2;
+                    Tick();
+                    Tick();
                     break;
                 case 0xDA: // JP C, a16 (Jump if Carry)
                     
@@ -1227,6 +1263,8 @@ namespace GameboyTest
                         return;
                     }
                     PC += 2;
+                    Tick();
+                    Tick();
                     break;
 
                 // --- CALLS & PUSHES ---
@@ -1240,6 +1278,8 @@ namespace GameboyTest
                         return;
                     }
                     PC += 2;
+                    Tick();
+                    Tick();
                     break;
                 case 0xD5: // PUSH DE
                     Push16((ushort)((D << 8) | E));
@@ -1254,6 +1294,8 @@ namespace GameboyTest
                         return;
                     }
                     PC += 2;
+                    Tick();
+                    Tick();
                     break;
 
                 // --- IMMEDIATE MATH ---
@@ -1385,6 +1427,8 @@ namespace GameboyTest
                     Push16(PC);
                     PC = 0x0038;
                     break;
+                case 0x10:
+                    return;
 
                 default:
                     throw new NotImplementedException($"Opcode 0x{opcode:X2} at PC 0x{PC - 1:X4} is not implemented!");

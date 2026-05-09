@@ -21,7 +21,7 @@ namespace GameboyTest
         // Internal Game Boy Memory Arrays
         public byte[] vram = new byte[0x2000]; // 8KB Video RAM (0x8000 - 0x9FFF)
         private byte[] wram = new byte[0x2000]; // 8KB Working RAM (0xC000 - 0xDFFF)
-
+        private byte[] eram = new byte [0x1E00]; // External RAM (0xA000 - 0xBFFF) - Size depends on cartridge, accessed via MBC    
         // --- NEW HARDWARE ARRAYS ---
         public byte[] oam = new byte[0xA0];    // 160 bytes Sprite RAM (0xFE00 - 0xFE9F)
         public byte[] io = new byte[0x80];     // 128 bytes I/O Registers (0xFF00 - 0xFF7F)
@@ -59,7 +59,7 @@ namespace GameboyTest
 
             // 5. Echo RAM (Mirrors 0xC000 - 0xDDFF)
             if (address >= 0xE000 && address <= 0xFDFF)
-                return wram[address - 0x2000]; // Subtract 0x2000 to map back to WRAM
+                return eram[address - 0xE000]; // Subtract 0x2000 to map back to WRAM
 
             // 6. OAM (Object Attribute Memory for Sprites)
             if (address >= 0xFE00 && address <= 0xFE9F)
@@ -74,15 +74,7 @@ namespace GameboyTest
             if (address == 0xFF05) return SystemTimer.TIMA;
             if (address == 0xFF06) return SystemTimer.TMA;
             if (address == 0xFF07) return SystemTimer.TAC;
-            if (address == 0xFF40) return ppu.LCDC;
-            if (address == 0xFF42) return ppu.SCY;
-            if (address == 0xFF43) return ppu.SCX;
-            if (address == 0xFF44) return ppu.LY;
-            if (address == 0xFF4A) return ppu.WY;
-            if (address == 0xFF4B) return ppu.WX;
-            if (address == 0xFF47) return ppu.BGP;
-            if (address == 0xFF48) return ppu.OBP0;
-            if (address == 0xFF49) return ppu.OBP1;
+
             if (address >= 0xFF00 && address <= 0xFF7F)
             {
                 // NOTE: When you build your Joypad or Timer classes, you will intercept
@@ -125,7 +117,7 @@ namespace GameboyTest
 
             // 5. Echo RAM (Writing here actually writes to WRAM!)
             else if (address >= 0xE000 && address <= 0xFDFF)
-                wram[address - 0x2000] = value;
+                eram[address - 0xE000] = value;
 
             // 6. OAM (Sprite Data)
             else if (address >= 0xFE00 && address <= 0xFE9F)
@@ -149,18 +141,6 @@ namespace GameboyTest
             if (address == 0xFF05) { SystemTimer.TIMA = value; return; }
             if (address == 0xFF06) { SystemTimer.TMA = value; return; }
             if (address == 0xFF07) { SystemTimer.SetTAC(value); return; }
-            if (address == 0xFF40) { ppu.LCDC = value;  return; }
-            if (address == 0xFF41) { ppu.STAT = value; return; } // Note: Lower 3 bits are technically read-only!
-            if (address == 0xFF44) { 
-                if (value == 0x91) { throw new Exception($"{address}"); } return; }
-            if (address == 0xFF45) { ppu.LYC = value; return; }
-            if (address == 0xFF42) { ppu.SCY = value; return; }
-            if (address == 0xFF43) { ppu.SCX = value; return; }
-            if (address == 0xFF4A) { ppu.WY = value; return; }
-            if (address == 0xFF4B) { ppu.WX = value; return; } 
-            if (address == 0xFF47) { ppu.BGP = value; return; } 
-            if (address == 0xFF48) { ppu.OBP0 = value; return; } 
-            if (address == 0xFF49) { ppu.OBP1 = value; return; }
             else if (address >= 0xFF00 && address <= 0xFF7F)
             {
                 // NOTE: Similar to reading, you will intercept specific writes here later.
@@ -248,8 +228,7 @@ namespace GameboyTest
             InitIO(0xFF41, 0x85); // STAT (LCD Status)
             InitIO(0xFF42, 0x00); // SCY (Scroll Y)
             InitIO(0xFF43, 0x00); // SCX (Scroll X)
-            InitIO(0xFF44, 0x90); // LY (LCD Y-Coordinate)
-            ppu.LY = 0; // Set the PPU's internal LY to match the hardware register
+            InitIO(0xFF44, 0); // LY (LCD Y-Coordinate) // Set the PPU's internal LY to match the hardware register
             InitIO(0xFF45, 0x00); // LYC (LY Compare)
             InitIO(0xFF46, 0xFF); // DMA (Direct Memory Access Transfer)
             InitIO(0xFF47, 0xFC); // BGP (Background Palette - Maps 0,1,2,3 to actual colors)
