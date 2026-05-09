@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Drawing.Text;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -52,7 +53,11 @@ namespace GameboyTest
         private byte[] oam { get; set; }
         private byte[] vram { get; set; }
         private byte[] io { get; set; }
-
+        private bool ly_check_triggered = false;
+        private int ly_compare_stored =0;
+        private bool ly_match_stored = false;
+        private bool ly_match = false;
+        private bool triggered_ly_interrupt = false;
         // A callback to tell your main SkiaSharp window: "The frame is ready, draw it!"
         public byte SCY { 
             get => io[0x42]; // 0xFF42
@@ -65,12 +70,12 @@ namespace GameboyTest
         }// 0xFF43
         public byte WY
         {
-            get => io[0x4A]; // 0xFF4A
+            get => (byte)(io[0x4A]-1) ; // 0xFF4A
             set => io[0x4A] = value;
         }   // 0xFF4A
         public byte WX
         {
-            get => io[0x4B]; // 0xFF4B
+            get => (byte)(io[0x4B] - 7); // 0xFF4B
             set => io[0x4B] = value;
         }   
         public byte BGP
@@ -103,17 +108,13 @@ namespace GameboyTest
         // Called by the CPU every time it ticks!
         public void Tick(int cycles)
         {
-            if (!IsLcdEnabled())
-            {
-                // HARDWARE QUIRK: When LCD is off, LY is 0, Mode is 0, and cycles reset.
-                scanlineCounter = 0;
-                
-                LY = 0;
-                STAT = (byte)((STAT & 0xFC) | 0x00);
-                return;
+
+            if (IsLcdEnabled()) {
+            
+                scanlineCounter -= cycles;
             }
 
-            scanlineCounter -= cycles;
+               
             
             // If we finished a full horizontal line...
             if (scanlineCounter <=0)
@@ -123,8 +124,12 @@ namespace GameboyTest
                 
                 if (LY == 144)
                 {
+                    if (IsLcdEnabled())
+                    {
+                        requestVBlankInterrupt();
+                    }
                     // We just entered V-Blank! 
-                    requestVBlankInterrupt(); // Fire INT 0x40
+                     // Fire INT 0x40
 
                     // Tell SkiaSharp to draw the FrameBuffer to the screen!
                     // (This replaces your pygame.display.flip() logic)
@@ -134,10 +139,13 @@ namespace GameboyTest
                 {
                     LY = 0; // Reset back to the top of the screen
                 }
-                else if (LY < 144)
+                else if (LY > 144)
                 {
-                    DrawScanline();
+                    windowLineCounter = 0;
                 }
+            }if (LY < 144)
+            {
+                DrawScanline();
             }
 
             // Update the STAT register based on our current cycle and LY
@@ -150,81 +158,141 @@ namespace GameboyTest
             byte currentMode = (byte)(STAT & 0x03);
             byte newMode = 0;
             bool requestStatInterrupt = false;
-
-            // 1. Determine the New Mode
-            if (LY >= 144)
+            bool requestLyInterrupt = false;
+            if (!IsLcdEnabled())
             {
-                newMode = 1; // V-Blank
+                // HARDWARE QUIRK: When LCD is off, LY is 0, Mode is 0, and cycles reset.
+                scanlineCounter = SCANLINE_CYCLES;
+
+                LY = 0;
+                STAT = (byte)((STAT & 0xFC) | 0x01);
+            }
+            // 1. Determine the New Mode
+            if (IsLcdEnabled())
+            {
+
+
+                    if ((ly_check_triggered == false))
+                    {
+                        if (LY >= 144)
+                        {
+                            newMode = 1; // V-Blank
+                        }
+                        if (scanlineCounter < MODE_2_BOUND)
+                        {
+                            newMode = 2; // OAM Search
+                        }
+                        else if (scanlineCounter < MODE_3_BOUND)
+                        {
+                            newMode = 3; // Pixel Transfer
+                        }
+
+                        else
+                        {
+                            newMode = 0; // H-Blank
+                        }
+                    }
+
+
+                
             }
             else
             {
-                if (scanlineCounter < MODE_2_BOUND)
-                {
-                    newMode = 2; // OAM Search
-                }
-                else if (scanlineCounter < MODE_3_BOUND)
-                {
-                    newMode = 3; // Pixel Transfer
-                }
-                else
-                {
-                    newMode = 0; // H-Blank
-                }
+                newMode = 0;
+            }
+            STAT = (byte)((STAT & 0xFC));
+            STAT |= newMode;
+            if (ly_match)
+            {
+                STAT |= 0x04; // Set LYC flag (Bit 2)
+            }
+            else
+            {
+                STAT &= 0xFB; // Clear LYC flag
+            }
+
+            if (IsLcdEnabled())
+            {
+
+                STAT &= 0xFC;
+                newMode = 0;
+
+
             }
 
             // 2. Check for LY == LYC (Coincidence Flag)
-            if (LY == LYC)
+            if (newMode == 0)
             {
-                STAT = (byte)(STAT | 0x04); // Set LYC flag (Bit 2)
-
-                // If LYC Interrupt is enabled (Bit 6)
-                if ((STAT & 0x40) != 0)
+                ly_match = (LY == LYC);
+                if ((ly_check_triggered == true) && LYC == 0)
                 {
-                    requestStatInterrupt = true;
+                    ly_match = true;
+                    /*STAT = (byte)(STAT | 0x04); // Set LYC flag (Bit 2)
+
+                    // If LYC Interrupt is enabled (Bit 6)
+                    if ((STAT & 0x40) != 0)
+                    {
+                        requestStatInterrupt = true;
+                    }*/
+                    ly_check_triggered = false;
                 }
+                ly_match_stored = ly_match;
+                ly_check_triggered = false;
+                ly_compare_stored = LYC;
             }
             else
             {
-                STAT = (byte)(STAT & ~0x04); // Clear LYC flag
+                ly_match = ly_match_stored;
+
+                ly_check_triggered = true;
             }
 
+            /*else
+            {
+                STAT = (byte)(STAT & ~0x04); // Clear LYC flag
+            }*/
+
             // 3. Check Mode Interrupts
+            
             if (newMode == 0 && (STAT & 0x08) != 0) requestStatInterrupt = true; // H-Blank Int
             if (newMode == 1 && (STAT & 0x10) != 0) requestStatInterrupt = true; // V-Blank Int
             if (newMode == 2 && (STAT & 0x20) != 0) requestStatInterrupt = true; // OAM Int
 
             // 4. Update the Mode bits in the STAT register
-            if (currentMode != newMode)
+            if (ly_match && ((STAT&0x40)>>6 == 1))
             {
-                STAT = (byte)((STAT & 0xFC) | newMode);
+                //throw new Exception($"STAT Interrupt Triggered! LY={LY}, LYC={LYC}, Mode={(STAT & 0x03)}, STAT={Convert.ToString(STAT, 2).PadLeft(8, '0')}");
+
+                requestLyInterrupt = true;
             }
+            STAT|= 0x80;
+
 
             // 5. Fire the Interrupt with STAT Blocking! (Your 'triggered' array logic)
             // Only trigger if the internal hardware wire just transitioned from LOW to HIGH
-            if (requestStatInterrupt)
+            if (triggered_ly_interrupt == false && (requestLyInterrupt |requestStatInterrupt)==true)
             {
-                if (!statInterruptLine)
+                /*if (!statInterruptLine)
                 {
                     requestLcdInterrupt(); // Fire INT 0x48
                     statInterruptLine = true;
-                }
+                }*/
+                requestLcdInterrupt();
+
+                //throw new Exception($"STAT Interrupt Triggered! LY={LY}, LYC={LYC}, Mode={(STAT & 0x03)}, STAT={Convert.ToString(STAT, 2).PadLeft(8, '0')}");
+
             }
-            else
-            {
+
                 // The wire went low, meaning it can trigger again in the future
-                statInterruptLine = false;
-            }
-            if (currentMode == 3 && newMode == 0)
-            {
-                DrawScanline();
-                throw new Exception("Scanline drawn!"); // For debugging, you can remove this later
-            }
+            triggered_ly_interrupt = requestLyInterrupt | requestStatInterrupt;
+     
+
         }
         private void DrawScanline()
         {
             // Bit 0: BG Enable, Bit 1: Sprite Enable
             if ((LCDC & 0x01) != 0) RenderTiles();
-            if ((LCDC & 0x02) != 0) RenderSprites();
+            //if ((LCDC & 0x02) != 0) RenderSprites();
         }
 
         private void RenderTiles()
@@ -232,38 +300,47 @@ namespace GameboyTest
             bool usingWindow = false;
 
             // Pre-compute control flags (Exactly like your Python code)
+            
+
             bool tileDataSigned = (LCDC & 0x10) == 0; // Bit 4
             ushort tileDataAddress = (ushort)(tileDataSigned ? 0x0800 : 0x0000); // Offset into VRAM array
 
             ushort bgMemory = (ushort)(((LCDC & 0x08) != 0) ? 0x1C00 : 0x1800); // Bit 3
             ushort windowMemory = (ushort)(((LCDC & 0x40) != 0) ? 0x1C00 : 0x1800); // Bit 6
 
-            bool windowEnabled = (LCDC & 0x20) != 0; // Bit 5
+             // Bit 5
 
             // Check if the window is currently visible on this scanline
-            if (windowEnabled && WY <= LY)
-            {
-                usingWindow = true;
-            }
+
 
             // --- ULTRA-FAST SCANLINE LOOP ---
             for (int pixel = 0; pixel < 160; pixel++)
             {
+                bool windowEnabled = (LCDC & 0x20) == 1;
                 int xPos = pixel + SCX;
                 int yPos = LY + SCY;
                 ushort tileMapBase = bgMemory;
-
-                // Are we drawing the window right now?
-                if (usingWindow && pixel >= (WX - 7))
+                xPos &= 255;
+                yPos &= 255;
+                if (windowEnabled)
                 {
-                    xPos = pixel - (WX - 7);
+                    throw new Exception();
+                }
+                if (windowEnabled &&LY > WY && pixel >WX-1)
+                {
+                    usingWindow = true;
+                }
+                // Are we drawing the window right now?
+                if (usingWindow)
+                {
+                    xPos = pixel - WX;
                     yPos = windowLineCounter;
                     tileMapBase = windowMemory;
+                    
                 }
 
                 // Wrap coordinates to 256x256 grid
-                xPos &= 255;
-                yPos &= 255;
+
 
                 // Which of the 32x32 tiles are we in?
                 int tileCol = xPos / 8;
@@ -277,11 +354,12 @@ namespace GameboyTest
                 if (tileDataSigned)
                 {
                     tileNum = (sbyte)tileNum;
+
                     tileNum += 128;
                 }
 
                 // Find the exact line in the tile (16 bytes per tile, 2 bytes per row)
-                int lineInTile = (yPos % 8) * 2;
+                int lineInTile = (yPos & 7) * 2;
                 ushort dataAddress = (ushort)(tileDataAddress + (tileNum * 16) + lineInTile);
 
                 // Read the two bytes representing the 8 pixels
@@ -289,7 +367,7 @@ namespace GameboyTest
                 byte data2 = VRAM[dataAddress + 1];
 
                 // Extract the color bit
-                int colorBit = 7 - (xPos % 8);
+                int colorBit = 7 - (xPos & 7);
                 int colorNum = (((data2 >> colorBit) & 1) << 1) | ((data1 >> colorBit) & 1);
 
                 // Store raw color for sprite priority checks later
