@@ -2,9 +2,6 @@ using GameboyTest.Form_Design;
 using GameboyTest.MBC;
 using SkiaSharp;
 using SkiaSharp.Views.Desktop;
-using System;
-using System.Drawing;
-using System.Windows.Forms;
 using System.Runtime.InteropServices;
 
 namespace GameboyTest
@@ -58,13 +55,11 @@ namespace GameboyTest
             // --- DEBUG MENU ---
             ToolStripMenuItem debugMenu = new ToolStripMenuItem("Debug");
 
-            ToolStripMenuItem viewMemoryItem = new ToolStripMenuItem("View Memory Banks");
-            viewMemoryItem.Click += ViewMemory_Click;
-
+            
             // --- NEW: Diagnostic Suite Item ---
 
             // Add items to Debug dropdown
-            debugMenu.DropDownItems.Add(viewMemoryItem); // Added to the dropdown here
+ // Added to the dropdown here
 
             // Add both main menus to the top bar
             menuStrip.Items.Add(fileMenu);
@@ -143,7 +138,7 @@ namespace GameboyTest
 
                         // 2. Create the bus and hand it the newly created MBC chip
 
-                        
+
                         if (activeCartridge.LoadRom(openFileDialog.FileName))
                         {
                             // TRIPWIRE 3: Did the ROM actually load into memory successfully?
@@ -156,7 +151,7 @@ namespace GameboyTest
 
                             // START THE LOGGER HERE!
                             string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cpu_log.txt");
-                            
+
                             // Optional: provide path to a blargg test text file
                             string blarggValidationPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "blargg9.txt");
                             //cpu.Logger.Start(logPath, blarggValidationPath);
@@ -182,7 +177,7 @@ namespace GameboyTest
             }
         }
 
-        
+
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             // Kill the emulator loop before Windows destroys the window
@@ -262,5 +257,6 @@ namespace GameboyTest
                 handle.Free();
             }
         }
+
     }
 }

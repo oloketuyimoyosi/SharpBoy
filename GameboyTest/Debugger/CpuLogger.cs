@@ -1,15 +1,8 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-namespace GameboyTest.Debugger
+﻿namespace GameboyTest.Debugger
 {
     using System;
-    using System.IO;
     using System.Diagnostics;
+    using System.IO;
 
     public class CpuLogger
     {
@@ -66,18 +59,18 @@ namespace GameboyTest.Debugger
             }
         }
 
-        public void LogState(CPU cpu,MemoryBus bus)
+        public void LogState(CPU cpu, MemoryBus bus)
         {
             if (!isLogging || writer == null) return;
 
             // Matches Blargg trace format perfectly:
             // "A: 01 F: B0 B: 00 C: 13 D: 00 E: D8 H: 01 L: 4D SP: FFFE PC: 00:0100"
             string logEntry = $"A: {cpu.A:X2} F: {cpu.F:X2} B: {cpu.B:X2} C: {cpu.C:X2} D: {cpu.D:X2} E: {cpu.E:X2} H: {cpu.H:X2} L: {cpu.L:X2} SP: {cpu.SP:X4} PC: 00:{cpu.PC:X4}";
-           
+
             if (isStrictValidation && blarggTrace != null && currentLineIndex < blarggTrace.Length)
             {
                 string expectedLine = blarggTrace[currentLineIndex];
-                
+
                 // Cut off anything coming after the " (" which is where the memory peek starts
                 string expectedBase = expectedLine;
                 int peekIndex = expectedLine.IndexOf(" (");
@@ -108,7 +101,7 @@ namespace GameboyTest.Debugger
             catch { /* Ignore lock errors */ }
         }
 
-        public void LogPC(ushort pc,MemoryBus bus)
+        public void LogPC(ushort pc, MemoryBus bus)
         {
             if (!isLogging || writer == null) return;
 

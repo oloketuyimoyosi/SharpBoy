@@ -1,7 +1,4 @@
 ﻿using GameboyTest.MBC;
-using System;
-
-using System;
 
 namespace GameboyTest
 {
@@ -21,23 +18,23 @@ namespace GameboyTest
         // Internal Game Boy Memory Arrays
         public byte[] vram = new byte[0x2000]; // 8KB Video RAM (0x8000 - 0x9FFF)
         private byte[] wram = new byte[0x2000]; // 8KB Working RAM (0xC000 - 0xDFFF)
-        private byte[] eram = new byte [0x1E00]; // External RAM (0xA000 - 0xBFFF) - Size depends on cartridge, accessed via MBC    
+        private byte[] eram = new byte[0x1E00]; // External RAM (0xA000 - 0xBFFF) - Size depends on cartridge, accessed via MBC    
         // --- NEW HARDWARE ARRAYS ---
         public byte[] oam = new byte[0xA0];    // 160 bytes Sprite RAM (0xFE00 - 0xFE9F)
         public byte[] io = new byte[0x80];     // 128 bytes I/O Registers (0xFF00 - 0xFF7F)
         private byte[] hram = new byte[0x7F];   // 127 bytes High RAM (0xFF80 - 0xFFFE)
-        private byte ieRegister = 0x00;         // 1 byte Interrupt Enable (0xFFFF)
+        public byte ieRegister = 0x00;         // 1 byte Interrupt Enable (0xFFFF)
 
         public MemoryBus(IMbc activeMbc, Action renderCallback)
         {
             this.mbc = activeMbc;
             SystemTimer = new Timer(RequestTimerInterrupt);
-            ppu = new PPU(RequestLcdInterrupt, RequestVBlankInterrupt, renderCallback,io,vram,oam);
+            ppu = new PPU(RequestLcdInterrupt, RequestVBlankInterrupt, renderCallback, io, vram, oam);
             InitializeHardwareRegisters();
         }
-        
-           
-        
+
+
+
 
         public byte ReadByte(ushort address)
         {
@@ -79,7 +76,7 @@ namespace GameboyTest
             {
                 // NOTE: When you build your Joypad or Timer classes, you will intercept
                 // reads here and return dynamic values instead of just reading the array!
-               
+
                 return io[address - 0xFF00];
             }
 
@@ -141,6 +138,10 @@ namespace GameboyTest
             if (address == 0xFF05) { SystemTimer.TIMA = value; return; }
             if (address == 0xFF06) { SystemTimer.TMA = value; return; }
             if (address == 0xFF07) { SystemTimer.SetTAC(value); return; }
+            if ((address == 0xFF41)&&(value == 0xFF))
+            {
+                throw new Exception("gengen");
+            }
             else if (address >= 0xFF00 && address <= 0xFF7F)
             {
                 // NOTE: Similar to reading, you will intercept specific writes here later.

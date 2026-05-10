@@ -1,10 +1,4 @@
 ﻿using GameboyTest.Debugger;
-using System;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace GameboyTest
 {
@@ -25,8 +19,9 @@ namespace GameboyTest
 
         // --- 16-BIT REGISTERS ---
         public ushort SP { get; set; } // Stack Pointer
+        public bool Interrupt_on_Line = false;
         public ushort PC { get; set; } // Program Counter
-
+        private bool haltBugTriggered = false;
         // --- 16-BIT PAIRED REGISTERS (Virtual) ---
         // The Game Boy allows combining two 8-bit registers into one 16-bit register.
         public ushort AF
@@ -90,8 +85,8 @@ namespace GameboyTest
         {
             // Every memory access takes 1 M-Cycle, which is 4 T-Cycles
             TotalClockCycles += 4;
-            bus.SystemTimer.Tick(4);
-            bus.ppu.Tick(4);
+            //bus.SystemTimer.Tick(4);
+            bus.ppu.Tick(4,PC, Halted,bus.ieRegister,IME,Interrupt_on_Line);
             // NOTE FOR LATER: This is exactly where you will sync the rest of the hardware!
             //ppu.Step(4);
             // timer.Step(4);
@@ -133,37 +128,44 @@ namespace GameboyTest
         }*/
         public void Step()
         {
-            // Store the PC before we attempt to execute
-            //Logger.LogState(this,bus);
-            //ushort currentPC = PC;
-
-                
-                // Add to a small history buffer (keep the last 10 steps)
-                //UpdateHistory(currentPC);
-
-            byte opcode = ReadNextByte();
+            // 1. HANDLE HALT STATE
             if (Halted)
             {
-                PC--;
-
+                // Check if an interrupt is pending (IE & IF)
+                // If any enabled interrupt is pending, wake up!
+                byte ie = bus.ReadByte(0xFFFF);
+                byte iff = bus.ReadByte(0xFF0F);
+                if (((bus.ieRegister & iff) & 0x1F) != 0)
+                {
+                    Halted = false;
+                    PC--;
+                }
+                else
+                {
+                    // Still halted: Consume 4 T-cycles and exit Step
+                    Tick();
+                    return;
+                }
             }
+
+            // 2. CHECK INTERRUPTS
+            // This handles the jump to the interrupt vector if IME is set
+
+            
+            // 3. LOGGING (Optional but recommended for your 0x0120 debug)
+            // bus.Logger.LogPC(PC);
+
+            // 4. FETCH NEXT OPCODE
+            byte opcode = ReadNextByte();
+
+            // 5. EXECUTE
             ExecuteOpcode(opcode);
+
             CheckInterrupts();
 
-            /*catch (Exception ex)
-            {
-                string history = string.Join(" -> ", pcHistory);
-                throw new Exception($"CPU Crash at PC: 0x{currentPC:X4}. \nHistory: {history}\nError: {ex.Message}");
-            }*/
         }
-
         // Simple history tracker
         private List<string> pcHistory = new List<string>();
-        private void UpdateHistory(ushort pc)
-        {
-            pcHistory.Add(pc.ToString("X4"));
-            
-        }
 
         // Helper to read a byte and push the PC forward automatically
         // Replace your old ReadNextByte with this:
@@ -171,8 +173,20 @@ namespace GameboyTest
         {
             Tick(); // Time passes while reading...
             byte value = bus.ReadByte(PC);
-            PC++;
+
+            if (haltBugTriggered)
+            {
+                // HALT Bug: The PC does not increment, so the same byte 
+                // will be read as the next opcode or data.
+                haltBugTriggered = false;
+            }
+            else
+            {
+                PC++;
+            }
+
             return value;
+
         }
 
         // New helper for reading memory from addresses other than PC (like reading RAM)
@@ -199,7 +213,7 @@ namespace GameboyTest
 
             // A bitwise AND tells us if any allowed interrupts are currently requesting to fire
             byte pendingInterrupts = (byte)(ie & iff);
-
+            
             if (pendingInterrupts > 0)
             {
                 // WAKE UP! If an interrupt is pending, the CPU instantly leaves the Halt state,
@@ -211,7 +225,7 @@ namespace GameboyTest
                 {
                     // 1. Disable the master switch so we don't get interrupted while handling an interrupt
                     IME = false;
-
+                    Interrupt_on_Line = true;
                     // 2. The CPU requires 8 T-Cycles of internal delay to prepare for the jump
                     Tick();
                     Tick();
@@ -225,15 +239,21 @@ namespace GameboyTest
                     // 4. Figure out exactly WHICH interrupt fired and jump to it!
                     if ((pendingInterrupts & 0x01) != 0)      // Bit 0: VBlank
                         ExecuteInterrupt(0, 0x40);
-                    else if ((pendingInterrupts & 0x02) != 0) // Bit 1: LCD STAT
+                    else if ((pendingInterrupts & 0x02) != 0)
+                    { // Bit 1: LCD STAT
                         ExecuteInterrupt(1, 0x48);
+                        
+                    }
                     else if ((pendingInterrupts & 0x04) != 0) // Bit 2: Timer
                         ExecuteInterrupt(2, 0x50);
                     else if ((pendingInterrupts & 0x08) != 0) // Bit 3: Serial
                         ExecuteInterrupt(3, 0x58);
+
                     else if ((pendingInterrupts & 0x10) != 0) // Bit 4: Joypad
                         ExecuteInterrupt(4, 0x60);
+                    bus.WriteByte(0xFF0F, 0);
                 }
+                
             }
         }
 
@@ -241,14 +261,22 @@ namespace GameboyTest
         {
             // 1. Clear the specific bit in the IF register so it doesn't keep firing endlessly
             byte iff = bus.ReadByte(0xFF0F);
+
             iff &= (byte)~(1 << bit);
+
             bus.WriteByte(0xFF0F, iff);
 
             // 2. Jump to the hardcoded memory address for this specific interrupt
             PC = jumpAddress;
 
             // 3. The final jump takes 4 T-Cycles
+
+
             Tick();
+
+            Interrupt_on_Line = false;
+
+
         }
         // ReadNextWord automatically takes 8 T-Cycles because it calls ReadNextByte twice!
         private ushort ReadNextWord()
@@ -262,7 +290,7 @@ namespace GameboyTest
             switch (opcode)
             {
                 case 0x00: // NOP (No Operation)
-                    break ; 
+                    break;
                 case 0x01: // LD BC, n16
                     BC = ReadNextWord();
                     break;
@@ -276,7 +304,7 @@ namespace GameboyTest
                     SP = ReadNextWord();
                     break;
                 case 0x02:
-                    WriteMemory(BC,A); // LD (BC), A
+                    WriteMemory(BC, A); // LD (BC), A
                     break;
                 case 0x12:
                     WriteMemory(DE, A);
@@ -595,7 +623,7 @@ namespace GameboyTest
                     FlagZ = (A == 0); FlagN = false;
                     break;
                 case 0x3D:
-                    
+
                     FlagH = (A & 0x0F) == 0;
 
 
@@ -840,10 +868,30 @@ namespace GameboyTest
 
                 // --- THE SLEEP COMMAND ---
                 case 0x76: // HALT
-                    // The CPU stops executing instructions here, but the internal clock keeps ticking
-                    // until a hardware interrupt (like a VBlank or Button Press) fires.
-                    Halted = true;
-                    break;
+                           // The CPU stops executing instructions here, but the internal clock keeps ticking
+                    bool interruptPending = ((bus.ieRegister & bus.ReadByte(0xFF0F)) & 0x1F) != 0;
+
+                    if (IME)
+                    {
+                        // Scenario 1: Normal Halt
+                        Halted = true;
+                    }
+                    else
+                    {
+                        if (interruptPending)
+                        {
+                            // Scenario 3: THE HALT BUG
+                            // IME is off, but an interrupt is already waiting.
+                            // We don't halt, but the PC fails to increment for the NEXT fetch.
+                            haltBugTriggered = true;
+                        }
+                        else
+                        {
+                            // Scenario 2: Warp Halt
+                            Halted = true;
+                        }
+                    }
+                    break; 
 
                 // --- 8-BIT LOADS (Destination: Memory at HL) ---
                 case 0x77: // LD (HL), A
@@ -1116,7 +1164,7 @@ namespace GameboyTest
 
                 // --- JUMPS ---
                 case 0xC2: // JP NZ, a16 (Jump to 16-bit address if Not Zero)
-                    
+
                     if (!FlagZ)
                     {
                         ushort addrC2 = ReadNextWord();
@@ -1133,12 +1181,12 @@ namespace GameboyTest
                     Tick();
                     break;
                 case 0xCA: // JP Z, a16 (Jump to 16-bit address if Zero)
-                    
+
                     if (FlagZ)
                     {
                         ushort addrCA = ReadNextWord();
                         PC = addrCA;
-                        
+
                         Tick();
                         return;
                     }
@@ -1149,13 +1197,13 @@ namespace GameboyTest
 
                 // --- CALLS & PUSHES ---
                 case 0xC4: // CALL NZ, a16 (Call function if Not Zero)
-                    
+
                     if (!FlagZ)
                     {
                         ushort callAddrC4 = ReadNextWord();
                         Push16(PC); // Push the RETURN address to the stack
-                        
-                        
+
+
                         PC = callAddrC4;
                         return;
 
@@ -1168,12 +1216,12 @@ namespace GameboyTest
                     Push16((ushort)((B << 8) | C));
                     break;
                 case 0xCC: // CALL Z, a16 (Call function if Zero)
-                    
+
                     if (FlagZ)
                     {
                         ushort callAddrCC = ReadNextWord();
                         Push16(PC);
-                        
+
                         PC = callAddrCC;
                         return;
                     }
@@ -1241,7 +1289,7 @@ namespace GameboyTest
 
                 // --- JUMPS ---
                 case 0xD2: // JP NC, a16 (Jump if No Carry)
-                    
+
                     if (!FlagC)
                     {
                         ushort addrD2 = ReadNextWord();
@@ -1254,7 +1302,7 @@ namespace GameboyTest
                     Tick();
                     break;
                 case 0xDA: // JP C, a16 (Jump if Carry)
-                    
+
                     if (FlagC)
                     {
                         ushort addrDA = ReadNextWord();
@@ -1269,7 +1317,7 @@ namespace GameboyTest
 
                 // --- CALLS & PUSHES ---
                 case 0xD4: // CALL NC, a16 (Call if No Carry)
-                    
+
                     if (!FlagC)
                     {
                         ushort callAddrD4 = ReadNextWord();
@@ -1285,7 +1333,7 @@ namespace GameboyTest
                     Push16((ushort)((D << 8) | E));
                     break;
                 case 0xDC: // CALL C, a16 (Call if Carry)
-                    
+
                     if (FlagC)
                     {
                         ushort callAddrDC = ReadNextWord();
@@ -1469,7 +1517,7 @@ namespace GameboyTest
             FlagN = false;
 
             // Half-carry must factor in the previous carry!
-            FlagH = (((A & 0x0F) + (value & 0x0F) + carry)> 0x0F);
+            FlagH = (((A & 0x0F) + (value & 0x0F) + carry) > 0x0F);
             FlagC = (result > 0xFF);
 
             A = (byte)result;
@@ -1556,7 +1604,7 @@ namespace GameboyTest
             FlagN = true; // Set to true because this is a subtraction operation
             int lowerA = A & 0x0F;
             int lowerValue = value & 0x0F;
-            if((lowerA - lowerValue < 0x00) && (lowerA > 0x8 || lowerValue > 0x8))
+            if ((lowerA - lowerValue < 0x00) && (lowerA > 0x8 || lowerValue > 0x8))
             {
                 FlagH = true;
             }
@@ -1569,7 +1617,7 @@ namespace GameboyTest
                 }
             }
 
-                FlagC = (A < value); // Check for full borrow
+            FlagC = (A < value); // Check for full borrow
         }
         // --- STACK HELPER METHODS ---
         private void Push16(ushort value)
@@ -1619,23 +1667,23 @@ namespace GameboyTest
             // The CB prefix gives access to 256 MORE instructions (Bit shifting, setting, testing)
             switch (cbOpcode)
             {
-                case 0x00: 
-                    B = Rlc(B); 
+                case 0x00:
+                    B = Rlc(B);
                     break;
-                case 0x01: 
-                    C = Rlc(C); 
+                case 0x01:
+                    C = Rlc(C);
                     break;
                 case 0x02:
-                    D = Rlc(D); 
+                    D = Rlc(D);
                     break;
-                case 0x03: 
-                    E = Rlc(E); 
+                case 0x03:
+                    E = Rlc(E);
                     break;
-                case 0x04: 
-                    H = Rlc(H); 
+                case 0x04:
+                    H = Rlc(H);
                     break;
-                case 0x05: 
-                    L = Rlc(L); 
+                case 0x05:
+                    L = Rlc(L);
                     break;
                 case 0x06:
                     WriteMemory(HL, Rlc(ReadMemory(HL)));
@@ -1648,23 +1696,23 @@ namespace GameboyTest
                     break;
 
                 // --- RRC (Rotate Right Circular) ---
-                case 0x08: 
-                    B = Rrc(B); 
+                case 0x08:
+                    B = Rrc(B);
                     break;
-                case 0x09: 
-                    C = Rrc(C); 
+                case 0x09:
+                    C = Rrc(C);
                     break;
-                case 0x0A: 
-                    D = Rrc(D); 
+                case 0x0A:
+                    D = Rrc(D);
                     break;
-                case 0x0B: 
-                    E = Rrc(E); 
+                case 0x0B:
+                    E = Rrc(E);
                     break;
-                case 0x0C: 
-                    H = Rrc(H); 
+                case 0x0C:
+                    H = Rrc(H);
                     break;
-                case 0x0D: 
-                    L = Rrc(L); 
+                case 0x0D:
+                    L = Rrc(L);
                     break;
                 case 0x0E:
                     WriteMemory(HL, Rrc(ReadMemory(HL)));
@@ -1673,23 +1721,23 @@ namespace GameboyTest
                     A = Rrc(A);
                     break;
                 // --- RL (Rotate Left Through Carry) ---
-                case 0x10: 
-                    B = Rl(B); 
+                case 0x10:
+                    B = Rl(B);
                     break;
-                case 0x11: 
-                    C = Rl(C); 
+                case 0x11:
+                    C = Rl(C);
                     break;
-                case 0x12: 
-                    D = Rl(D); 
+                case 0x12:
+                    D = Rl(D);
                     break;
-                case 0x13: 
-                    E = Rl(E); 
+                case 0x13:
+                    E = Rl(E);
                     break;
-                case 0x14: 
-                    H = Rl(H); 
+                case 0x14:
+                    H = Rl(H);
                     break;
-                case 0x15: 
-                    L = Rl(L); 
+                case 0x15:
+                    L = Rl(L);
                     break;
                 case 0x16:
                     WriteMemory(HL, Rl(ReadMemory(HL)));
@@ -1700,22 +1748,22 @@ namespace GameboyTest
 
                 // --- RR (Rotate Right Through Carry) ---
                 case 0x18:
-                    B = Rr(B); 
+                    B = Rr(B);
                     break;
-                case 0x19: 
-                    C = Rr(C); 
+                case 0x19:
+                    C = Rr(C);
                     break;
-                case 0x1A: 
-                    D = Rr(D); 
+                case 0x1A:
+                    D = Rr(D);
                     break;
-                case 0x1B: 
-                    E = Rr(E); 
+                case 0x1B:
+                    E = Rr(E);
                     break;
-                case 0x1C: 
-                    H = Rr(H); 
+                case 0x1C:
+                    H = Rr(H);
                     break;
-                case 0x1D: 
-                    L = Rr(L); 
+                case 0x1D:
+                    L = Rr(L);
                     break;
                 case 0x1E:
                     WriteMemory(HL, Rr(ReadMemory(HL)));
@@ -1724,23 +1772,23 @@ namespace GameboyTest
                     A = Rr(A);
                     break;
                 // --- SLA (Shift Left Arithmetic) ---
-                case 0x20: 
-                    B = Sla(B); 
+                case 0x20:
+                    B = Sla(B);
                     break;
-                case 0x21: 
-                    C = Sla(C); 
+                case 0x21:
+                    C = Sla(C);
                     break;
-                case 0x22: 
-                    D = Sla(D); 
+                case 0x22:
+                    D = Sla(D);
                     break;
-                case 0x23: 
-                    E = Sla(E); 
+                case 0x23:
+                    E = Sla(E);
                     break;
-                case 0x24: 
-                    H = Sla(H); 
+                case 0x24:
+                    H = Sla(H);
                     break;
-                case 0x25: 
-                    L = Sla(L); 
+                case 0x25:
+                    L = Sla(L);
                     break;
                 case 0x26:
                     WriteMemory(HL, Sla(ReadMemory(HL)));
@@ -1750,23 +1798,23 @@ namespace GameboyTest
                     break;
 
                 // --- SRA (Shift Right Arithmetic) ---
-                case 0x28: 
-                    B = Sra(B); 
+                case 0x28:
+                    B = Sra(B);
                     break;
-                case 0x29: 
-                    C = Sra(C); 
+                case 0x29:
+                    C = Sra(C);
                     break;
-                case 0x2A: 
-                    D = Sra(D); 
+                case 0x2A:
+                    D = Sra(D);
                     break;
-                case 0x2B: 
-                    E = Sra(E); 
+                case 0x2B:
+                    E = Sra(E);
                     break;
-                case 0x2C: 
-                    H = Sra(H); 
+                case 0x2C:
+                    H = Sra(H);
                     break;
-                case 0x2D: 
-                    L = Sra(L); 
+                case 0x2D:
+                    L = Sra(L);
                     break;
                 case 0x2E:
                     WriteMemory(HL, Sra(ReadMemory(HL)));
@@ -1775,23 +1823,23 @@ namespace GameboyTest
                     A = Sra(A);
                     break;
                 // --- SWAP (Swap Nibbles) ---
-                case 0x30: 
-                    B = Swap(B); 
+                case 0x30:
+                    B = Swap(B);
                     break;
-                case 0x31: 
-                    C = Swap(C); 
+                case 0x31:
+                    C = Swap(C);
                     break;
                 case 0x32:
-                    D = Swap(D); 
+                    D = Swap(D);
                     break;
-                case 0x33: 
-                    E = Swap(E); 
+                case 0x33:
+                    E = Swap(E);
                     break;
-                case 0x34: 
-                    H = Swap(H); 
+                case 0x34:
+                    H = Swap(H);
                     break;
-                case 0x35: 
-                    L = Swap(L); 
+                case 0x35:
+                    L = Swap(L);
                     break;
                 case 0x36:
                     WriteMemory(HL, Swap(ReadMemory(HL)));
@@ -1801,22 +1849,22 @@ namespace GameboyTest
                     break;
 
                 // --- SRL (Shift Right Logical) ---
-                case 0x38: 
-                    B = Srl(B); 
+                case 0x38:
+                    B = Srl(B);
                     break;
-                case 0x39: 
-                    C = Srl(C); 
+                case 0x39:
+                    C = Srl(C);
                     break;
-                case 0x3A: 
-                    D = Srl(D); 
+                case 0x3A:
+                    D = Srl(D);
                     break;
-                case 0x3B: 
-                    E = Srl(E); 
+                case 0x3B:
+                    E = Srl(E);
                     break;
-                case 0x3C: 
-                    H = Srl(H); 
+                case 0x3C:
+                    H = Srl(H);
                     break;
-                case 0x3D: 
+                case 0x3D:
                     L = Srl(L);
                     break;
                 case 0x3E:
@@ -1826,23 +1874,23 @@ namespace GameboyTest
                     A = Srl(A);
                     break;
                 // --- BIT 0 (Test Bit 0) ---
-                case 0x40: 
-                    TestBit(B, 0); 
+                case 0x40:
+                    TestBit(B, 0);
                     break;
-                case 0x41: 
-                    TestBit(C, 0); 
+                case 0x41:
+                    TestBit(C, 0);
                     break;
-                case 0x42: 
-                    TestBit(D, 0); 
+                case 0x42:
+                    TestBit(D, 0);
                     break;
-                case 0x43: 
-                    TestBit(E, 0); 
+                case 0x43:
+                    TestBit(E, 0);
                     break;
-                case 0x44: 
-                    TestBit(H, 0); 
+                case 0x44:
+                    TestBit(H, 0);
                     break;
-                case 0x45: 
-                    TestBit(L, 0); 
+                case 0x45:
+                    TestBit(L, 0);
                     break;
                 case 0x46:
                     // Memory Accurate: 4 (CB prefix) + 4 (opcode) + 4 (read) = 12 cycles
@@ -1851,164 +1899,164 @@ namespace GameboyTest
                 case 0x47: TestBit(A, 0); break;
 
                 // --- BIT 1 (Test Bit 1) ---
-                case 0x48: 
-                    TestBit(B, 1); 
+                case 0x48:
+                    TestBit(B, 1);
                     break;
-                case 0x49: 
-                    TestBit(C, 1); 
+                case 0x49:
+                    TestBit(C, 1);
                     break;
-                case 0x4A: 
-                    TestBit(D, 1); 
+                case 0x4A:
+                    TestBit(D, 1);
                     break;
-                case 0x4B: 
-                    TestBit(E, 1); 
+                case 0x4B:
+                    TestBit(E, 1);
                     break;
-                case 0x4C: 
-                    TestBit(H, 1); 
+                case 0x4C:
+                    TestBit(H, 1);
                     break;
-                case 0x4D: 
-                    TestBit(L, 1); 
+                case 0x4D:
+                    TestBit(L, 1);
                     break;
                 case 0x4E:
                     TestBit(ReadMemory(HL), 1);
                     break;
-                case 0x4F: 
-                    TestBit(A, 1); 
+                case 0x4F:
+                    TestBit(A, 1);
                     break;
                 // ==========================================
                 // ======= FINISHING BIT OPERATIONS =========
                 // ==========================================
 
                 // --- BIT 2 ---
-                case 0x50: 
-                    TestBit(B, 2); 
+                case 0x50:
+                    TestBit(B, 2);
                     break;
-                case 0x51: 
-                    TestBit(C, 2); 
+                case 0x51:
+                    TestBit(C, 2);
                     break;
-                case 0x52: 
-                    TestBit(D, 2); 
+                case 0x52:
+                    TestBit(D, 2);
                     break;
-                case 0x53: 
-                    TestBit(E, 2); 
+                case 0x53:
+                    TestBit(E, 2);
                     break;
-                case 0x54: 
-                    TestBit(H, 2); 
+                case 0x54:
+                    TestBit(H, 2);
                     break;
-                case 0x55: 
-                    TestBit(L, 2); 
+                case 0x55:
+                    TestBit(L, 2);
                     break;
-                case 0x56: 
-                    TestBit(ReadMemory(HL), 2); 
+                case 0x56:
+                    TestBit(ReadMemory(HL), 2);
                     break;
-                case 0x57: 
-                    TestBit(A, 2); 
+                case 0x57:
+                    TestBit(A, 2);
                     break;
 
                 // --- BIT 3 ---
-                case 0x58: 
-                    TestBit(B, 3); 
+                case 0x58:
+                    TestBit(B, 3);
                     break;
-                case 0x59: 
-                    TestBit(C, 3); 
+                case 0x59:
+                    TestBit(C, 3);
                     break;
-                case 0x5A: 
-                    TestBit(D, 3); 
+                case 0x5A:
+                    TestBit(D, 3);
                     break;
-                case 0x5B: 
-                    TestBit(E, 3); 
+                case 0x5B:
+                    TestBit(E, 3);
                     break;
-                case 0x5C: 
-                    TestBit(H, 3); 
+                case 0x5C:
+                    TestBit(H, 3);
                     break;
-                case 0x5D: 
-                    TestBit(L, 3); 
+                case 0x5D:
+                    TestBit(L, 3);
                     break;
-                case 0x5E: 
-                    TestBit(ReadMemory(HL), 3); 
+                case 0x5E:
+                    TestBit(ReadMemory(HL), 3);
                     break;
-                case 0x5F: 
-                    TestBit(A, 3); 
+                case 0x5F:
+                    TestBit(A, 3);
                     break;
 
                 // --- BIT 4 ---
-                case 0x60: 
-                    TestBit(B, 4); 
+                case 0x60:
+                    TestBit(B, 4);
                     break;
-                case 0x61: 
-                    TestBit(C, 4); 
+                case 0x61:
+                    TestBit(C, 4);
                     break;
-                case 0x62: 
-                    TestBit(D, 4); 
+                case 0x62:
+                    TestBit(D, 4);
                     break;
-                case 0x63: 
-                    TestBit(E, 4); 
+                case 0x63:
+                    TestBit(E, 4);
                     break;
-                case 0x64: 
-                    TestBit(H, 4); 
+                case 0x64:
+                    TestBit(H, 4);
                     break;
-                case 0x65: 
-                    TestBit(L, 4); 
+                case 0x65:
+                    TestBit(L, 4);
                     break;
-                case 0x66: 
-                    TestBit(ReadMemory(HL), 4); 
+                case 0x66:
+                    TestBit(ReadMemory(HL), 4);
                     break;
-                case 0x67: 
-                    TestBit(A, 4); 
+                case 0x67:
+                    TestBit(A, 4);
                     break;
 
                 // --- BIT 5 ---
-                case 0x68: 
+                case 0x68:
                     TestBit(B, 5); break;
-                case 0x69: 
+                case 0x69:
                     TestBit(C, 5); break;
-                case 0x6A: 
+                case 0x6A:
                     TestBit(D, 5); break;
-                case 0x6B: 
+                case 0x6B:
                     TestBit(E, 5); break;
-                case 0x6C: 
+                case 0x6C:
                     TestBit(H, 5); break;
-                case 0x6D: 
+                case 0x6D:
                     TestBit(L, 5); break;
-                case 0x6E: 
+                case 0x6E:
                     TestBit(ReadMemory(HL), 5); break;
-                case 0x6F: 
+                case 0x6F:
                     TestBit(A, 5); break;
 
                 // --- BIT 6 ---
                 case 0x70:
                     TestBit(B, 6); break;
-                case 0x71: 
+                case 0x71:
                     TestBit(C, 6); break;
-                case 0x72: 
+                case 0x72:
                     TestBit(D, 6); break;
-                case 0x73: 
+                case 0x73:
                     TestBit(E, 6); break;
-                case 0x74: 
+                case 0x74:
                     TestBit(H, 6); break;
-                case 0x75: 
+                case 0x75:
                     TestBit(L, 6); break;
-                case 0x76: 
+                case 0x76:
                     TestBit(ReadMemory(HL), 6); break;
                 case 0x77:
                     TestBit(A, 6); break;
 
                 // --- BIT 7 ---
-                case 0x78: 
+                case 0x78:
                     TestBit(B, 7); break;
-                case 0x79: 
+                case 0x79:
                     TestBit(C, 7); break;
-                case 0x7A: 
+                case 0x7A:
                     TestBit(D, 7); break;
-                case 0x7B: 
+                case 0x7B:
                     TestBit(E, 7); break;
-                case 0x7C: 
+                case 0x7C:
                     TestBit(H, 7); break;
-                case 0x7D: 
+                case 0x7D:
                     TestBit(L, 7); break;
-                case 0x7E: 
+                case 0x7E:
                     TestBit(ReadMemory(HL), 7); break;
-                case 0x7F: 
+                case 0x7F:
                     TestBit(A, 7); break;
 
                 // ==========================================
@@ -2016,7 +2064,7 @@ namespace GameboyTest
                 // ==========================================
 
                 // --- RES 0 (Reset Bit 0) ---
-                case 0x80: 
+                case 0x80:
                     B = ResetBit(B, 0);
                     break;
                 case 0x81:
@@ -2031,10 +2079,10 @@ namespace GameboyTest
                     H = ResetBit(H, 0);
                     break;
                 case 0x85:
-                    L = ResetBit(L, 0); 
+                    L = ResetBit(L, 0);
                     break;
                 case 0x86:
-                    WriteMemory(HL, ResetBit(ReadMemory(HL), 0)); 
+                    WriteMemory(HL, ResetBit(ReadMemory(HL), 0));
                     break;
                 case 0x87:
                     A = ResetBit(A, 0);
@@ -2047,19 +2095,19 @@ namespace GameboyTest
                 case 0x89:
                     C = ResetBit(C, 1);
                     break;
-                case 0x8A: 
+                case 0x8A:
                     D = ResetBit(D, 1);
                     break;
-                case 0x8B: 
+                case 0x8B:
                     E = ResetBit(E, 1);
                     break;
-                case 0x8C: 
+                case 0x8C:
                     H = ResetBit(H, 1);
                     break;
-                case 0x8D: 
+                case 0x8D:
                     L = ResetBit(L, 1);
                     break;
-                case 0x8E: 
+                case 0x8E:
                     WriteMemory(HL, ResetBit(ReadMemory(HL), 1));
                     break;
                 case 0x8F:
@@ -2067,54 +2115,54 @@ namespace GameboyTest
                     break;
 
                 // --- RES 2 (Reset Bit 2) ---
-                case 0x90: 
-                    B = ResetBit(B, 2); 
+                case 0x90:
+                    B = ResetBit(B, 2);
                     break;
                 case 0x91:
-                    C = ResetBit(C, 2); 
+                    C = ResetBit(C, 2);
                     break;
                 case 0x92:
                     D = ResetBit(D, 2);
                     break;
                 case 0x93:
-                    E = ResetBit(E, 2); 
+                    E = ResetBit(E, 2);
                     break;
                 case 0x94:
-                    H = ResetBit(H, 2); 
+                    H = ResetBit(H, 2);
                     break;
                 case 0x95:
                     L = ResetBit(L, 2); break;
                 case 0x96:
-                    WriteMemory(HL, ResetBit(ReadMemory(HL), 2)); 
+                    WriteMemory(HL, ResetBit(ReadMemory(HL), 2));
                     break;
                 case 0x97:
                     A = ResetBit(A, 2);
                     break;
 
                 // --- RES 3 (Reset Bit 3) ---
-                case 0x98: 
-                    B = ResetBit(B, 3); 
+                case 0x98:
+                    B = ResetBit(B, 3);
                     break;
                 case 0x99:
-                    C = ResetBit(C, 3); 
+                    C = ResetBit(C, 3);
                     break;
                 case 0x9A:
-                    D = ResetBit(D, 3); 
+                    D = ResetBit(D, 3);
                     break;
                 case 0x9B:
-                    E = ResetBit(E, 3); 
+                    E = ResetBit(E, 3);
                     break;
                 case 0x9C:
-                    H = ResetBit(H, 3); 
+                    H = ResetBit(H, 3);
                     break;
                 case 0x9D:
-                    L = ResetBit(L, 3); 
+                    L = ResetBit(L, 3);
                     break;
                 case 0x9E:
-                    WriteMemory(HL, ResetBit(ReadMemory(HL), 3)); 
+                    WriteMemory(HL, ResetBit(ReadMemory(HL), 3));
                     break;
                 case 0x9F:
-                    A = ResetBit(A, 3); 
+                    A = ResetBit(A, 3);
                     break;
                 // ==========================================
                 // ========= FINISHING RES BITS 4-7 =========
@@ -2280,7 +2328,7 @@ namespace GameboyTest
             FlagN = false;
             FlagH = false;
             FlagC = carry;
-       
+
             return result;
         }
         private byte Rl(byte value)
@@ -2299,7 +2347,7 @@ namespace GameboyTest
             FlagN = false;
             FlagH = false;
             FlagC = newCarry;
-            
+
             return result;
         }
 
@@ -2319,7 +2367,7 @@ namespace GameboyTest
             FlagN = false;
             FlagH = false;
             FlagC = newCarry;
-            
+
             return result;
         }
         private byte Sla(byte value)
@@ -2335,7 +2383,7 @@ namespace GameboyTest
             FlagN = false;
             FlagH = false;
             FlagC = carry;
-            
+
             return result;
         }
         private byte Sra(byte value)
@@ -2354,7 +2402,7 @@ namespace GameboyTest
             FlagN = false;
             FlagH = false;
             FlagC = carry;
-            
+
             return result;
         }
         private byte Swap(byte value)
@@ -2371,7 +2419,7 @@ namespace GameboyTest
             FlagN = false;
             FlagH = false;
             FlagC = false;
-            
+
             return result;
         }
         private byte Srl(byte value)
@@ -2388,7 +2436,7 @@ namespace GameboyTest
             FlagN = false;
             FlagH = false;
             FlagC = carry;
-            
+
             return result;
         }
         private void TestBit(byte value, int bitPosition)
@@ -2403,7 +2451,7 @@ namespace GameboyTest
             FlagZ = isBitZero;
             FlagN = false;
             FlagH = true; // Hardware quirk: BIT always sets the Half-Carry flag
-            
+
             // FlagC remains unchanged!
         }
         private byte ResetBit(byte value, int bitPosition)
@@ -2414,7 +2462,7 @@ namespace GameboyTest
 
             // 3. Use bitwise AND. The 0 forces the target bit to turn off, 
             // while the 1s leave all other bits perfectly intact!
-            
+
             return (byte)(value & mask);
         }
         private byte SetBit(byte value, int bitPosition)

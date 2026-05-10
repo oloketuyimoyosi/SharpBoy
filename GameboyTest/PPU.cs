@@ -1,9 +1,5 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Drawing.Text;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+﻿using System.Diagnostics;
+using System.Net;
 
 namespace GameboyTest
 {
@@ -13,8 +9,8 @@ namespace GameboyTest
         public byte LCDC { get => io[0x40]; set => io[0x40] = value; } // 0xFF40
         public byte STAT { get => io[0x41]; set => io[0x41] = value; } // 0xFF41
         public byte LY { get => io[0x44]; set => io[0x44] = value; }   // 0xFF44
-        public byte LYC { get => io[0x4B]; set => io[0x45] = value; }  // 0xFF45
-                                       // --- VRAM & OAM (Super Fast Direct Access) ---
+        public byte LYC { get => io[0x45]; set => io[0x45] = value; }  // 0xFF45
+                                                                       // --- VRAM & OAM (Super Fast Direct Access) ---
         public byte[] VRAM { get; private set; } = new byte[8192]; // 0x8000 - 0x9FFF
         public byte[] OAM { get; private set; } = new byte[160];   // 0xFE00 - 0xFE9F
 
@@ -53,13 +49,15 @@ namespace GameboyTest
         private byte[] oam { get; set; }
         private byte[] vram { get; set; }
         private byte[] io { get; set; }
-        private bool ly_check_triggered = false;
-        private int ly_compare_stored =0;
+        private bool ly_check_triggered { get; set; } = false;
+       
+        private bool ly_compare_stored = false;
         private bool ly_match_stored = false;
+        private bool draw { get; set; } = false;
         private bool ly_match = false;
-        private bool triggered_ly_interrupt = false;
         // A callback to tell your main SkiaSharp window: "The frame is ready, draw it!"
-        public byte SCY { 
+        public byte SCY
+        {
             get => io[0x42]; // 0xFF42
             set => io[0x42] = value;
         }
@@ -70,14 +68,14 @@ namespace GameboyTest
         }// 0xFF43
         public byte WY
         {
-            get => (byte)(io[0x4A]-1) ; // 0xFF4A
+            get => (byte)(io[0x4A] - 1); // 0xFF4A
             set => io[0x4A] = value;
         }   // 0xFF4A
         public byte WX
         {
             get => (byte)(io[0x4B] - 7); // 0xFF4B
             set => io[0x4B] = value;
-        }   
+        }
         public byte BGP
         {
             get => io[0x47]; // 0xFF47
@@ -103,25 +101,29 @@ namespace GameboyTest
         private bool IsLcdEnabled()
         {
             return (LCDC & 0x80) != 0;
-        }
+        } 
 
         // Called by the CPU every time it ticks!
-        public void Tick(int cycles)
+        public void Tick(int cycles, ushort PC, bool halted, byte ie,bool IME,bool Interrupt_on_Line)
         {
 
-            if (IsLcdEnabled()) {
-            
+            if (IsLcdEnabled())
+            {
+
                 scanlineCounter -= cycles;
             }
 
-               
-            
+
             // If we finished a full horizontal line...
-            if (scanlineCounter <=0)
+            if (scanlineCounter <= 0)
             {
+                if (LY < 144 && draw == true)
+                {
+                    DrawScanline();
+                }
                 scanlineCounter = SCANLINE_CYCLES;
                 LY++;
-                
+
                 if (LY == 144)
                 {
                     if (IsLcdEnabled())
@@ -129,7 +131,7 @@ namespace GameboyTest
                         requestVBlankInterrupt();
                     }
                     // We just entered V-Blank! 
-                     // Fire INT 0x40
+                    // Fire INT 0x40
 
                     // Tell SkiaSharp to draw the FrameBuffer to the screen!
                     // (This replaces your pygame.display.flip() logic)
@@ -137,95 +139,66 @@ namespace GameboyTest
                 }
                 else if (LY > 153)
                 {
+                    
                     LY = 0; // Reset back to the top of the screen
                 }
                 else if (LY > 144)
                 {
                     windowLineCounter = 0;
                 }
-            }if (LY < 144)
-            {
-                DrawScanline();
+
             }
 
+            UpdateStatus(PC,halted,ie,IME,Interrupt_on_Line);
+
+
             // Update the STAT register based on our current cycle and LY
-            UpdateStatus();
+
         }
 
         // This is the direct C# translation of your SET_LCD_STATUS python method
-        private void UpdateStatus()
+        private void UpdateStatus(ushort PC,bool halted, byte ie,bool IME,bool Interrupt_on_Line)
         {
-            byte currentMode = (byte)(STAT & 0x03);
-            byte newMode = 0;
+
+            
+            byte current_mode = (byte)(STAT & 0x3);
             bool requestStatInterrupt = false;
             bool requestLyInterrupt = false;
+
+           
             if (!IsLcdEnabled())
             {
-                // HARDWARE QUIRK: When LCD is off, LY is 0, Mode is 0, and cycles reset.
                 scanlineCounter = SCANLINE_CYCLES;
-
                 LY = 0;
                 STAT = (byte)((STAT & 0xFC) | 0x01);
+
             }
-            // 1. Determine the New Mode
-            if (IsLcdEnabled())
+
+
+
+
+            int new_mode = calculatemode(scanlineCounter, LY, IsLcdEnabled(), LY == LYC);
+
+
+
+            if (new_mode == 0 && current_mode == 0)
             {
-
-
-                    if ((ly_check_triggered == false))
-                    {
-                        if (LY >= 144)
-                        {
-                            newMode = 1; // V-Blank
-                        }
-                        if (scanlineCounter < MODE_2_BOUND)
-                        {
-                            newMode = 2; // OAM Search
-                        }
-                        else if (scanlineCounter < MODE_3_BOUND)
-                        {
-                            newMode = 3; // Pixel Transfer
-                        }
-
-                        else
-                        {
-                            newMode = 0; // H-Blank
-                        }
-                    }
-
-
-                
+                draw = true;
             }
             else
             {
-                newMode = 0;
+                draw = false;
             }
-            STAT = (byte)((STAT & 0xFC));
-            STAT |= newMode;
-            if (ly_match)
-            {
-                STAT |= 0x04; // Set LYC flag (Bit 2)
-            }
-            else
-            {
-                STAT &= 0xFB; // Clear LYC flag
-            }
+
+            int new_status = updateStatus(STAT, new_mode, LY == LYC);
+
 
             if (IsLcdEnabled())
-            {
-
-                STAT &= 0xFC;
-                newMode = 0;
-
-
-            }
-
-            // 2. Check for LY == LYC (Coincidence Flag)
-            if (newMode == 0)
             {
                 ly_match = (LY == LYC);
-                if ((ly_check_triggered == true) && LYC == 0)
+                if ((ly_compare_stored == true) && LYC == 0)
                 {
+                    requestStatInterrupt = true;
                     ly_match = true;
                     /*STAT = (byte)(STAT | 0x04); // Set LYC flag (Bit 2)
 
@@ -234,59 +207,127 @@ namespace GameboyTest
                     {
                         requestStatInterrupt = true;
                     }*/
-                    ly_check_triggered = false;
+                    ly_compare_stored = false;
                 }
                 ly_match_stored = ly_match;
-                ly_check_triggered = false;
-                ly_compare_stored = LYC;
+                ly_compare_stored = false;
+
             }
             else
             {
+               
                 ly_match = ly_match_stored;
 
-                ly_check_triggered = true;
+                ly_compare_stored = true;
             }
+            new_status |= 0x80;
 
-            /*else
+
+            if (IsLcdEnabled() == false)
             {
-                STAT = (byte)(STAT & ~0x04); // Clear LYC flag
-            }*/
+                new_status &= 0xFC;
+                new_mode = 0;
+            }
+            if (new_mode == 0 && ((new_status & 0x08) != 0)) requestStatInterrupt = true; // H-Blank Int
+            if (new_mode == 1 && ((new_status & 0x10) != 0)) requestStatInterrupt = true; // V-Blank Int
+            if (new_mode == 2 && ((new_status & 0x20) != 0)) requestStatInterrupt = true; // OAM Int
 
-            // 3. Check Mode Interrupts
-            
-            if (newMode == 0 && (STAT & 0x08) != 0) requestStatInterrupt = true; // H-Blank Int
-            if (newMode == 1 && (STAT & 0x10) != 0) requestStatInterrupt = true; // V-Blank Int
-            if (newMode == 2 && (STAT & 0x20) != 0) requestStatInterrupt = true; // OAM Int
 
             // 4. Update the Mode bits in the STAT register
-            if (ly_match && ((STAT&0x40)>>6 == 1))
+            if (ly_match&& ((new_status & 0x40) !=0))
             {
-                //throw new Exception($"STAT Interrupt Triggered! LY={LY}, LYC={LYC}, Mode={(STAT & 0x03)}, STAT={Convert.ToString(STAT, 2).PadLeft(8, '0')}");
 
+                //throw new Exception($"STAT Interrupt Triggered! LY={LY}, LYC={LYC}, Mode={(STAT & 0x03)}, STAT={Convert.ToString(STAT, 2).PadLeft(8, '0')}");
+                
                 requestLyInterrupt = true;
+                
+                //requestLcdInterrupt();
+                //Debug.WriteLine($"1. LY=LYC Interrupt Condition Met! LY={LY}, LYC={LYC}, Mode={(STAT & 0x03)}, STAT={Convert.ToString(STAT, 2).PadLeft(8, '0')}");
             }
-            STAT|= 0x80;
+
+
+
 
 
             // 5. Fire the Interrupt with STAT Blocking! (Your 'triggered' array logic)
             // Only trigger if the internal hardware wire just transitioned from LOW to HIGH
-            if (triggered_ly_interrupt == false && (requestLyInterrupt |requestStatInterrupt)==true)
+            if ((ly_check_triggered == false )&& ((requestLyInterrupt || requestStatInterrupt) == true) && (Interrupt_on_Line == false))
             {
+
                 /*if (!statInterruptLine)
                 {
                     requestLcdInterrupt(); // Fire INT 0x48
                     statInterruptLine = true;
                 }*/
-                requestLcdInterrupt();
+ 
+                 requestLcdInterrupt();
+
 
                 //throw new Exception($"STAT Interrupt Triggered! LY={LY}, LYC={LYC}, Mode={(STAT & 0x03)}, STAT={Convert.ToString(STAT, 2).PadLeft(8, '0')}");
 
             }
+            if ((io[0xF] == 2)&&(PC == 0x48))
+            {
+                throw new Exception();
+            }
+            // The wire went low, meaning it can trigger again in the future
+            ly_check_triggered = requestLyInterrupt || requestStatInterrupt;
 
-                // The wire went low, meaning it can trigger again in the future
-            triggered_ly_interrupt = requestLyInterrupt | requestStatInterrupt;
-     
 
+
+            //Debug.WriteLine($"2.  LY={LY}, LYC={LYC}, Mode={(STAT & 0x03)}, STAT={STAT.ToString("X8")},Ly_match={ly_match},scanline= {scanlineCounter}, ly_check_triggered = {ly_check_triggered} PC {PC} halted {halted} ie {ie} if {io[0xF]} IME {IME} interrupt {(ly_check_triggered == false && ((requestLyInterrupt || requestStatInterrupt) == true))}");
+
+
+
+            STAT = (byte)new_status;
+
+        }
+
+        private int calculatemode(int scanline_cycles, int current_line, bool lcd_enabled, bool ly_state)
+        {
+            if (lcd_enabled)
+            {
+
+                if (current_line >= 144)
+                {
+                    return 0x1;
+                }
+                else if (scanline_cycles > (SCANLINE_CYCLES-MODE_2_BOUND)  )
+                {
+                    return 0x2;
+                }
+                else if (scanline_cycles>=(SCANLINE_CYCLES-MODE_3_BOUND))
+                {
+                    return 0x3;
+                }
+                else
+                {
+                    return 0x0;
+
+
+
+                }
+                
+
+
+
+            }
+            return 0x0;
+        }
+        private int updateStatus(int status, int mode, bool lyc_match)
+        {
+            status = (status & 0xFC) | (mode);
+            
+            if (lyc_match)
+            {
+                status |= 0x4;
+            }
+            else
+            {
+                status &= 0xFB;
+            }
+
+            return status;
         }
         private void DrawScanline()
         {
@@ -300,7 +341,7 @@ namespace GameboyTest
             bool usingWindow = false;
 
             // Pre-compute control flags (Exactly like your Python code)
-            
+
 
             bool tileDataSigned = (LCDC & 0x10) == 0; // Bit 4
             ushort tileDataAddress = (ushort)(tileDataSigned ? 0x0800 : 0x0000); // Offset into VRAM array
@@ -308,7 +349,7 @@ namespace GameboyTest
             ushort bgMemory = (ushort)(((LCDC & 0x08) != 0) ? 0x1C00 : 0x1800); // Bit 3
             ushort windowMemory = (ushort)(((LCDC & 0x40) != 0) ? 0x1C00 : 0x1800); // Bit 6
 
-             // Bit 5
+            // Bit 5
 
             // Check if the window is currently visible on this scanline
 
@@ -316,17 +357,14 @@ namespace GameboyTest
             // --- ULTRA-FAST SCANLINE LOOP ---
             for (int pixel = 0; pixel < 160; pixel++)
             {
-                bool windowEnabled = (LCDC & 0x20) == 1;
+                bool windowEnabled = (LCDC & 0x20) != 0;
                 int xPos = pixel + SCX;
                 int yPos = LY + SCY;
                 ushort tileMapBase = bgMemory;
                 xPos &= 255;
                 yPos &= 255;
-                if (windowEnabled)
-                {
-                    throw new Exception();
-                }
-                if (windowEnabled &&LY > WY && pixel >WX-1)
+
+                if (windowEnabled && LY > WY && pixel > WX - 1)
                 {
                     usingWindow = true;
                 }
@@ -336,7 +374,7 @@ namespace GameboyTest
                     xPos = pixel - WX;
                     yPos = windowLineCounter;
                     tileMapBase = windowMemory;
-                    
+
                 }
 
                 // Wrap coordinates to 256x256 grid
