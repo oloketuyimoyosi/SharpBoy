@@ -55,6 +55,14 @@ namespace GameboyTest
         private bool ly_match_stored = false;
         private bool draw { get; set; } = false;
         private bool ly_match = false;
+        private struct SpriteData
+        {
+            public int Y;
+            public int X;
+            public int Tile;
+            public int Attributes;
+            public int OamIndex;
+        }
         // A callback to tell your main SkiaSharp window: "The frame is ready, draw it!"
         public byte SCY
         {
@@ -333,7 +341,7 @@ namespace GameboyTest
         {
             // Bit 0: BG Enable, Bit 1: Sprite Enable
             if ((LCDC & 0x01) != 0) RenderTiles();
-            //if ((LCDC & 0x02) != 0) RenderSprites();
+            if ((LCDC & 0x02) != 0) RenderSprites();
         }
 
         private void RenderTiles()
@@ -426,69 +434,95 @@ namespace GameboyTest
         {
             bool use8x16 = (LCDC & 0x04) != 0; // Bit 2
             int spriteHeight = use8x16 ? 16 : 8;
-            int spritesDrawn = 0;
 
-            // OAM contains 40 sprites (4 bytes each)
-            // We loop forward, but the hardware gives priority to lower X coordinates.
-            for (int i = 0; i < 160 && spritesDrawn < 10; i += 4)
+            // Step 1: Collect up to 10 sprites that intersect this scanline
+            var sprites = new List<SpriteData>(10);
+
+            for (int i = 0; i < 160 && sprites.Count < 10; i += 4)
             {
                 int yPos = OAM[i] - 16;
-                int xPos = OAM[i + 1] - 8;
-                int tileLocation = OAM[i + 2];
-                int attributes = OAM[i + 3];
 
                 // Does this sprite intersect our current scanline?
                 if (LY >= yPos && LY < (yPos + spriteHeight))
                 {
-                    spritesDrawn++;
-
-                    bool yFlip = (attributes & 0x40) != 0;
-                    bool xFlip = (attributes & 0x20) != 0;
-                    bool usePalette1 = (attributes & 0x10) != 0;
-                    bool objBehindBg = (attributes & 0x80) != 0; // Priority
-
-                    byte palette = usePalette1 ? OBP1 : OBP0;
-
-                    // Determine which line of the sprite we are drawing
-                    int line = LY - yPos;
-                    if (yFlip)
+                    sprites.Add(new SpriteData
                     {
-                        line = (spriteHeight - 1) - line;
-                    }
+                        Y = yPos,
+                        X = OAM[i + 1] - 8,
+                        Tile = OAM[i + 2],
+                        Attributes = OAM[i + 3],
+                        OamIndex = i
+                    });
+                }
+            }
 
-                    if (use8x16)
-                    {
-                        // 8x16 sprites ignore the bottom bit of the tile index
-                        tileLocation &= 0xFE;
-                    }
+            // Exit early if no sprites are on this line
+            if (sprites.Count == 0) return;
 
-                    // Get memory address
-                    ushort dataAddress = (ushort)((tileLocation * 16) + (line * 2));
-                    byte data1 = VRAM[dataAddress];
-                    byte data2 = VRAM[dataAddress + 1];
+            // Step 2: Sort the sprites by Priority.
+            // Game Boy priority: Lowest X coordinate draws ON TOP. If X is tied, Lowest OAM index draws ON TOP.
+            // By sorting DESCENDING, we draw the lowest priority sprites first, letting the higher priority 
+            // sprites safely overwrite them at the end of the loop (just like the Python reverse() logic).
+            sprites.Sort((a, b) => {
+                int xCmp = b.X.CompareTo(a.X);
+                if (xCmp != 0) return xCmp;
+                return b.OamIndex.CompareTo(a.OamIndex);
+            });
 
-                    // Draw the 8 pixels
-                    for (int tilePixel = 0; tilePixel < 8; tilePixel++)
-                    {
-                        int colorBit = xFlip ? tilePixel : (7 - tilePixel);
-                        int colorNum = (((data2 >> colorBit) & 1) << 1) | ((data1 >> colorBit) & 1);
+            // Step 3: Draw the sorted sprites
+            foreach (var sprite in sprites)
+            {
+                int yPos = sprite.Y;
+                int xPos = sprite.X;
+                int tileLocation = sprite.Tile;
+                int attributes = sprite.Attributes;
 
-                        // Color 0 is always transparent for sprites!
-                        if (colorNum == 0) continue;
+                bool yFlip = (attributes & 0x40) != 0;
+                bool xFlip = (attributes & 0x20) != 0;
+                bool usePalette1 = (attributes & 0x10) != 0;
+                bool objBehindBg = (attributes & 0x80) != 0; // Priority
 
-                        int pixelX = xPos + tilePixel;
+                byte palette = usePalette1 ? OBP1 : OBP0;
 
-                        // Skip if off-screen
-                        if (pixelX < 0 || pixelX > 159) continue;
+                // Determine which line of the sprite we are drawing
+                int line = LY - yPos;
+                if (yFlip)
+                {
+                    line = (spriteHeight - 1) - line;
+                }
 
-                        // Sprite Priority Logic:
-                        // If objBehindBg is true, the sprite ONLY draws if the background color was 0 (transparent).
-                        if (objBehindBg && scanlineRawColors[pixelX] != 0) continue;
+                if (use8x16)
+                {
+                    // 8x16 sprites ignore the bottom bit of the tile index
+                    tileLocation &= 0xFE;
+                }
 
-                        // Map through palette and draw!
-                        int paletteVal = (palette >> (colorNum * 2)) & 3;
-                        FrameBuffer[LY * 160 + pixelX] = Colors[paletteVal];
-                    }
+                // Get memory address
+                ushort dataAddress = (ushort)((tileLocation * 16) + (line * 2));
+                byte data1 = VRAM[dataAddress];
+                byte data2 = VRAM[dataAddress + 1];
+
+                // Draw the 8 pixels
+                for (int tilePixel = 0; tilePixel < 8; tilePixel++)
+                {
+                    int colorBit = xFlip ? tilePixel : (7 - tilePixel);
+                    int colorNum = (((data2 >> colorBit) & 1) << 1) | ((data1 >> colorBit) & 1);
+
+                    // Color 0 is always transparent for sprites!
+                    if (colorNum == 0) continue;
+
+                    int pixelX = xPos + tilePixel;
+
+                    // Skip if off-screen
+                    if (pixelX < 0 || pixelX > 159) continue;
+
+                    // Sprite Priority Logic:
+                    // If objBehindBg is true, the sprite ONLY draws if the background color was 0 (transparent).
+                    if (objBehindBg && scanlineRawColors[pixelX] != 0) continue;
+
+                    // Map through palette and draw!
+                    int paletteVal = (palette >> (colorNum * 2)) & 3;
+                    FrameBuffer[LY * 160 + pixelX] = Colors[paletteVal];
                 }
             }
         }
