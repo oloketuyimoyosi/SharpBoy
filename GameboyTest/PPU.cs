@@ -94,7 +94,7 @@ namespace GameboyTest
             get => io[0x48]; // 0xFF4B
             set => io[0x48] = value;
         }   // 0xFF48 (Sprite Palette 0)
-        public byte OBP1 { get => io[0x4B]; set => io[0x4B] = value; } // 0xFF49 (Sprite Palette 1)
+        public byte OBP1 { get => io[0x49]; set => io[0x49] = value; } // 0xFF49 (Sprite Palette 1)
         private Action requestFrameRender;
         public PPU(Action lcdInterrupt, Action vBlankInterrupt, Action renderCallback, byte[] io, byte[] vram, byte[] oam)
         {
