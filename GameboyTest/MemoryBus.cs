@@ -28,7 +28,7 @@ namespace GameboyTest
         public MemoryBus(IMbc activeMbc, Action renderCallback)
         {
             this.mbc = activeMbc;
-            SystemTimer = new Timer(RequestTimerInterrupt);
+            SystemTimer = new Timer(RequestTimerInterrupt,io);
             ppu = new PPU(RequestLcdInterrupt, RequestVBlankInterrupt, renderCallback, io, vram, oam);
             InitializeHardwareRegisters();
         }

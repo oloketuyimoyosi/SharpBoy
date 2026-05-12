@@ -4,15 +4,15 @@
     public class Timer
     {
         // The 4 Hardware Registers
-        public byte DIV { get; private set; } // 0xFF04
-        public byte TIMA { get; set; }        // 0xFF05
-        public byte TMA { get; set; }         // 0xFF06
-        public byte TAC { get; set; }         // 0xFF07
+        public byte DIV { get => io[0x4]; set => io[0x4] = value; } // 0xFF04
+        public byte TIMA { get => io[0x5]; set => io[0x5] = value; }        // 0xFF05
+        public byte TMA { get => io[0x6]; set => io[0x6] = value; }         // 0xFF06
+        public byte TAC { get => io[0x7]; set => io[0x7] = value; }         // 0xFF07
 
         // --- 2. INTERNAL STATE & TIMING ---
         private int divCounter = 0;
         private int timaCounter = 0;
-
+        public byte[] io { get; set; }
         // The raw T-Cycle thresholds for the 4 frequencies: 4096 Hz, 262144 Hz, 65536 Hz, 16384 Hz
         private readonly int[] FrequencyThresholds = { 1024, 16, 64, 256 };
 
@@ -22,17 +22,18 @@
         // Callback to tell the MemoryBus to flip the IF interrupt flag
         private Action requestInterrupt;
 
-        public Timer(Action interruptCallback)
+        public Timer(Action interruptCallback, byte[] io)
         {
             this.requestInterrupt = interruptCallback;
+            this.io = io;
         }
         public void Tick(int cycles)
         {
             // 1. DIV always runs, completely independent of TAC
             divCounter += cycles;
-            if (divCounter >= 256)
+            if (divCounter >= 255)
             {
-                divCounter -= 256;
+                divCounter =0;
                 DIV++; // C# automatically wraps 255 to 0 because it's a byte
             }
 
@@ -45,11 +46,16 @@
                 while (timaCounter >= currentThreshold)
                 {
                     timaCounter -= currentThreshold;
-
+                    currentThreshold = FrequencyThresholds[TAC&0x3];
                     if (TIMA == 255) // Overflow!
                     {
                         TIMA = TMA; // Reload with Modulo
-                        requestInterrupt(); // Trigger the Timer Interrupt!
+                        requestInterrupt();
+                        TIMA = TMA;
+                        if (DIV == 0)
+                        {
+                            io[0xF] &= 0xFB;
+                        }// Trigger the Timer Interrupt!
                     }
                     else
                     {

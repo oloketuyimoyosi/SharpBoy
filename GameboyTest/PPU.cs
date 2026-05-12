@@ -41,8 +41,9 @@ namespace GameboyTest
         private int scanlineCounter = 456;
 
         // This replaces your 'triggered' array for accurate STAT blocking!
-        private bool statInterruptLine = false;
 
+        private bool tick = false;
+        private bool ppu_mode_on_off = false;
         private Action requestLcdInterrupt;
         private Action requestVBlankInterrupt;
         public uint[] FrameBuffer { get; private set; } = new uint[160 * 144];
@@ -50,10 +51,10 @@ namespace GameboyTest
         private byte[] vram { get; set; }
         private byte[] io { get; set; }
         private bool ly_check_triggered { get; set; } = false;
-       
+        private bool lcd_on_off = false;
         private bool ly_compare_stored = false;
         private bool ly_match_stored = false;
-        private bool draw { get; set; } = false;
+
         private bool ly_match = false;
         private struct SpriteData
         {
@@ -123,14 +124,16 @@ namespace GameboyTest
 
 
             // If we finished a full horizontal line...
-            if (scanlineCounter <= 0)
+            if ((scanlineCounter <= 0)&& (tick == false))
             {
-                if (LY < 144 && draw == true)
+                if (LY < 144 && (calculatemode(scanlineCounter,LY,IsLcdEnabled(),PC) == 0))
                 {
                     DrawScanline();
+                    tick = true;
                 }
                 scanlineCounter = SCANLINE_CYCLES;
                 LY++;
+                tick = false;
 
                 if (LY == 144)
                 {
@@ -138,11 +141,7 @@ namespace GameboyTest
                     {
                         requestVBlankInterrupt();
                     }
-                    // We just entered V-Blank! 
-                    // Fire INT 0x40
 
-                    // Tell SkiaSharp to draw the FrameBuffer to the screen!
-                    // (This replaces your pygame.display.flip() logic)
                     requestFrameRender();
                 }
                 else if (LY > 153)
@@ -165,69 +164,53 @@ namespace GameboyTest
         }
 
         // This is the direct C# translation of your SET_LCD_STATUS python method
-        private void UpdateStatus(ushort PC,bool halted, byte ie,bool IME,bool Interrupt_on_Line)
+        private void UpdateStatus(ushort PC, bool halted, byte ie, bool IME, bool Interrupt_on_Line)
         {
 
-            
+
             byte current_mode = (byte)(STAT & 0x3);
             bool requestStatInterrupt = false;
             bool requestLyInterrupt = false;
 
-           
+
             if (!IsLcdEnabled())
             {
                 scanlineCounter = SCANLINE_CYCLES;
                 LY = 0;
-                STAT = (byte)((STAT & 0xFC) | 0x01);
+
 
             }
 
 
 
 
-            int new_mode = calculatemode(scanlineCounter, LY, IsLcdEnabled(), LY == LYC);
+            int new_mode = calculatemode(scanlineCounter, LY, IsLcdEnabled(),PC);
 
 
 
-            if (new_mode == 0 && current_mode == 0)
-            {
-                draw = true;
-            }
-            else
-            {
-                draw = false;
-            }
 
-            int new_status = updateStatus(STAT, new_mode, LY == LYC);
+            
 
 
+            ly_match = (LY == LYC);
             if (IsLcdEnabled())
             {
-                ly_match = (LY == LYC);
-                if ((ly_compare_stored == true) && LYC == 0)
-                {
-                    requestStatInterrupt = true;
-                    ly_match = true;
-                    /*STAT = (byte)(STAT | 0x04); // Set LYC flag (Bit 2)
-
-                    // If LYC Interrupt is enabled (Bit 6)
-                    if ((STAT & 0x40) != 0)
-                    {
-                        requestStatInterrupt = true;
-                    }*/
-                    ly_compare_stored = false;
-                }
                 ly_match_stored = ly_match;
-                ly_compare_stored = false;
-
             }
             else
             {
-               
                 ly_match = ly_match_stored;
-
-                ly_compare_stored = true;
             }
+            if ((lcd_on_off == false)&&(IsLcdEnabled() == true))
+            {
+
+                    ly_match = ly_match_stored;
+
+
+                    ppu_mode_on_off = true;
+            }
+
+                int new_status = updateStatus(STAT, new_mode);
             new_status |= 0x80;
 
 
@@ -242,13 +225,13 @@ namespace GameboyTest
 
 
             // 4. Update the Mode bits in the STAT register
-            if (ly_match&& ((new_status & 0x40) !=0))
+            if (ly_match && ((new_status & 0x40) != 0))
             {
 
                 //throw new Exception($"STAT Interrupt Triggered! LY={LY}, LYC={LYC}, Mode={(STAT & 0x03)}, STAT={Convert.ToString(STAT, 2).PadLeft(8, '0')}");
-                
+
                 requestLyInterrupt = true;
-                
+
                 //requestLcdInterrupt();
                 //Debug.WriteLine($"1. LY=LYC Interrupt Condition Met! LY={LY}, LYC={LYC}, Mode={(STAT & 0x03)}, STAT={Convert.ToString(STAT, 2).PadLeft(8, '0')}");
             }
@@ -259,7 +242,7 @@ namespace GameboyTest
 
             // 5. Fire the Interrupt with STAT Blocking! (Your 'triggered' array logic)
             // Only trigger if the internal hardware wire just transitioned from LOW to HIGH
-            if ((ly_check_triggered == false )&& ((requestLyInterrupt || requestStatInterrupt) == true) && (Interrupt_on_Line == false))
+            if ((ly_check_triggered == false) && ((requestLyInterrupt || requestStatInterrupt) == true) && (Interrupt_on_Line == false))
             {
 
                 /*if (!statInterruptLine)
@@ -267,17 +250,14 @@ namespace GameboyTest
                     requestLcdInterrupt(); // Fire INT 0x48
                     statInterruptLine = true;
                 }*/
- 
-                 requestLcdInterrupt();
+
+                requestLcdInterrupt();
 
 
                 //throw new Exception($"STAT Interrupt Triggered! LY={LY}, LYC={LYC}, Mode={(STAT & 0x03)}, STAT={Convert.ToString(STAT, 2).PadLeft(8, '0')}");
 
             }
-            if ((io[0xF] == 2)&&(PC == 0x48))
-            {
-                throw new Exception();
-            }
+
             // The wire went low, meaning it can trigger again in the future
             ly_check_triggered = requestLyInterrupt || requestStatInterrupt;
 
@@ -286,33 +266,57 @@ namespace GameboyTest
             //Debug.WriteLine($"2.  LY={LY}, LYC={LYC}, Mode={(STAT & 0x03)}, STAT={STAT.ToString("X8")},Ly_match={ly_match},scanline= {scanlineCounter}, ly_check_triggered = {ly_check_triggered} PC {PC} halted {halted} ie {ie} if {io[0xF]} IME {IME} interrupt {(ly_check_triggered == false && ((requestLyInterrupt || requestStatInterrupt) == true))}");
 
 
-
             STAT = (byte)new_status;
+            lcd_on_off = IsLcdEnabled();
 
         }
 
-        private int calculatemode(int scanline_cycles, int current_line, bool lcd_enabled, bool ly_state)
+        private int calculatemode(int scanline_cycles, int current_line, bool lcd_enabled,ushort PC)
         {
             if (lcd_enabled)
             {
-
-                if (current_line >= 144)
+                if((ppu_mode_on_off)&&(LY == 0))
                 {
-                    return 0x1;
-                }
-                else if (scanline_cycles > (SCANLINE_CYCLES-MODE_2_BOUND)  )
-                {
-                    return 0x2;
-                }
-                else if (scanline_cycles>=(SCANLINE_CYCLES-MODE_3_BOUND))
-                {
-                    return 0x3;
+                    
+                    if (scanline_cycles >= (SCANLINE_CYCLES - 204))
+                    {
+                        return 0x0;
+                    }else if (scanline_cycles >= (SCANLINE_CYCLES - MODE_3_BOUND))
+                    {
+                        return 0x3;
+                    }
+                    else
+                    {
+                        return 0;
+                    }
                 }
                 else
                 {
-                    return 0x0;
+                    ppu_mode_on_off = false;
+
+                        if (current_line >= 144)
+                        {
+
+                            return 0x1;
+                        }
+                        else if (scanline_cycles >= (SCANLINE_CYCLES - MODE_2_BOUND))
+                        {
+
+                            return 0x2;
+                        }
+                        else if (scanline_cycles >= (SCANLINE_CYCLES - MODE_3_BOUND))
+                        {
+
+                            return 0x3;
+                        }
+                        else
+                        {
+                            //
+                            return 0x0;
 
 
+
+                        }
 
                 }
                 
@@ -322,11 +326,11 @@ namespace GameboyTest
             }
             return 0x0;
         }
-        private int updateStatus(int status, int mode, bool lyc_match)
+        private int updateStatus(int status, int mode)
         {
             status = (status & 0xFC) | (mode);
             
-            if (lyc_match)
+            if (ly_match)
             {
                 status |= 0x4;
             }
