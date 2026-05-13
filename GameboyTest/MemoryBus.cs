@@ -67,16 +67,13 @@ namespace GameboyTest
                 return 0xFF;
 
             // 8. I/O Registers (Joypad, Timers, Audio, LCD)
-            if (address == 0xFF04) return SystemTimer.DIV;
-            if (address == 0xFF05) return SystemTimer.TIMA;
-            if (address == 0xFF06) return SystemTimer.TMA;
-            if (address == 0xFF07) return SystemTimer.TAC;
+
 
             if (address >= 0xFF00 && address <= 0xFF7F)
             {
                 // NOTE: When you build your Joypad or Timer classes, you will intercept
                 // reads here and return dynamic values instead of just reading the array!
-
+                
                 return io[address - 0xFF00];
             }
 
@@ -132,21 +129,23 @@ namespace GameboyTest
             // 8. I/O Registers
             if (address == 0xFF04)
             {
-                SystemTimer.ResetDiv(); // Writing ANYTHING to DIV resets it!
+                SystemTimer.ResetDiv();
+                io[0x4] = 0;// Writing ANYTHING to DIV resets it!
                 return;
             }
-            if (address == 0xFF05) { SystemTimer.TIMA = value; return; }
-            if (address == 0xFF06) { SystemTimer.TMA = value; return; }
-            if (address == 0xFF07) { SystemTimer.SetTAC(value); return; }
-            if ((address == 0xFF41)&&(value == 0xFF))
-            {
-                throw new Exception("gengen");
-            }
+
+            if (address == 0xFF07) { SystemTimer.SetTAC(value); io[address - 0xFF00] = value; return; }
+
             else if (address >= 0xFF00 && address <= 0xFF7F)
             {
                 // NOTE: Similar to reading, you will intercept specific writes here later.
                 // Example: Writing to 0xFF46 triggers a DMA transfer to copy sprite data.
+                if (io[0xF] == 228 && (value == 0))
+                {
+                    throw new Exception($"{value}");
+                }
                 io[address - 0xFF00] = value;
+
             }
 
             // 9. HRAM
@@ -187,7 +186,7 @@ namespace GameboyTest
             InitIO(0xFF04, 0xAB); // DIV (Divider Register)
             InitIO(0xFF05, 0x00); // TIMA (Timer Counter)
             InitIO(0xFF06, 0x00); // TMA (Timer Modulo)
-            InitIO(0xFF07, 0xF8); // TAC (Timer Control)
+            InitIO(0xFF07, 0xFD); // TAC (Timer Control)
 
             // --- INTERRUPTS ---
             InitIO(0xFF0F, 0xE1); // IF (Interrupt Flag)

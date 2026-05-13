@@ -22,6 +22,7 @@ namespace GameboyTest
         public bool Interrupt_on_Line = false;
         public ushort PC { get; set; } // Program Counter
         private bool haltBugTriggered = false;
+
         // --- 16-BIT PAIRED REGISTERS (Virtual) ---
         // The Game Boy allows combining two 8-bit registers into one 16-bit register.
         public ushort AF
@@ -251,7 +252,7 @@ namespace GameboyTest
 
                     else if ((pendingInterrupts & 0x10) != 0) // Bit 4: Joypad
                         ExecuteInterrupt(4, 0x60);
-                    bus.WriteByte(0xFF0F, 0);
+
                 }
                 
             }
