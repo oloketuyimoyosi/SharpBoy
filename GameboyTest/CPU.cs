@@ -172,7 +172,7 @@ namespace GameboyTest
         // Replace your old ReadNextByte with this:
         private byte ReadNextByte()
         {
-            Tick(); // Time passes while reading...
+
             byte value = bus.ReadByte(PC);
 
             if (haltBugTriggered)
@@ -185,7 +185,7 @@ namespace GameboyTest
             {
                 PC++;
             }
-
+            Tick(); 
             return value;
 
         }
@@ -1180,6 +1180,7 @@ namespace GameboyTest
                 case 0xC3: // JP a16 (Unconditional Jump)
                     PC = ReadNextWord();
                     Tick();
+
                     break;
                 case 0xCA: // JP Z, a16 (Jump to 16-bit address if Zero)
 
@@ -1233,7 +1234,8 @@ namespace GameboyTest
                 case 0xCD: // CALL a16 (Unconditional Call)
                     ushort callAddrCD = ReadNextWord();
                     Push16(PC);
-                    PC = callAddrCD;
+                    PC = (ushort)(callAddrCD) ;
+
                     break;
 
                 // --- IMMEDIATE MATH ---
@@ -1623,7 +1625,7 @@ namespace GameboyTest
         // --- STACK HELPER METHODS ---
         private void Push16(ushort value)
         {
-            Tick(); // Internal delay: CPU takes 4 cycles to prep for a push
+            Tick(); // Internal delay: CPU takes 4 cycles to prep for a push CHANGE LATER
 
             // Push the higher byte first
             SP--;

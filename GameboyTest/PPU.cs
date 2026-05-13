@@ -107,8 +107,6 @@ namespace GameboyTest
             this.io = io;
             this.vram = vram;
             this.oam = oam;
-            debugLog = new System.IO.StreamWriter("ppu_debug_log.txt");
-            debugLog.AutoFlush = true; // Ensures data is written immediately if the emulator crashes
 
         }
         // Helper to check if the LCD is currently turned on (Bit 7 of LCDC)
@@ -243,6 +241,7 @@ namespace GameboyTest
                 new_status &= 0xFC;
                 new_mode = 0;
             }
+
             if (new_mode == 0 && ((new_status & 0x08) != 0)) requestStatInterrupt = true; // H-Blank Int
             if (new_mode == 1 && ((new_status & 0x10) != 0)) requestStatInterrupt = true; // V-Blank Int
             if (new_mode == 2 && ((new_status & 0x20) != 0)) requestStatInterrupt = true; // OAM Int
@@ -275,7 +274,9 @@ namespace GameboyTest
                     statInterruptLine = true;
                 }*/
 
-                requestLcdInterrupt();
+                    requestLcdInterrupt();
+
+                
 
 
                 //throw new Exception($"STAT Interrupt Triggered! LY={LY}, LYC={LYC}, Mode={(STAT & 0x03)}, STAT={Convert.ToString(STAT, 2).PadLeft(8, '0')}");
@@ -287,13 +288,6 @@ namespace GameboyTest
 
 
 
-            //Debug.WriteLine($"2.  LY={LY}, LYC={LYC}, Mode={(STAT & 0x03)}, STAT={STAT.ToString("X8")},Ly_match={ly_match},scanline= {scanlineCounter}, ly_check_triggered = {ly_check_triggered} PC {PC} halted {halted} ie {ie} if {io[0xF]} IME {IME} interrupt {(ly_check_triggered == false && ((requestLyInterrupt || requestStatInterrupt) == true))}");
-
-            int imeValue = IME ? 1 : 0;
-
-            string logLine = $"1. TAMC: {io[0X7]} TIMA: {io[0x5]}, lcd_var: {lcd_on_off} Mode: {(new_mode)}, LYC: {LYC} lyc_match = {ly_match}, Triggered = {ly_check_triggered}, LY = {LY},STAT = 0x{new_status:X2} Halt:{halted}  IME: {imeValue}  IE {ie} IF {io[0x0F]} SCANLINE = {scanlineCounter} PC = 0x{PC:X4}";
-
-            debugLog.WriteLine(logLine);
             STAT = (byte)new_status;
             lcd_on_off = IsLcdEnabled();
 
@@ -304,22 +298,7 @@ namespace GameboyTest
             
             if (lcd_enabled)
             {
-                if((ppu_mode_on_off)&&(LY == 0))
-                {
-                    Debug.WriteLine($"omo {ppu_mode_on_off}");
 
-                    if (scanline_cycles >= (SCANLINE_CYCLES - 204))
-                    {
-                        return 0x0;
-                    }else 
-                    {
-                        return 0x3;
-                    }
-
-                }
-                else if ((ppu_mode_on_off == false))
-                {
-                    ppu_mode_on_off = false;
 
                         if (current_line >= 144)
                         {
@@ -346,12 +325,9 @@ namespace GameboyTest
                         }
 
                 }
-                
 
-
-
-            }
             return 0x0;
+
         }
         private int updateStatus(int status, int mode)
         {

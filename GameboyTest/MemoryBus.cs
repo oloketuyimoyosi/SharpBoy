@@ -28,7 +28,7 @@ namespace GameboyTest
         public MemoryBus(IMbc activeMbc, Action renderCallback)
         {
             this.mbc = activeMbc;
-            SystemTimer = new Timer(RequestTimerInterrupt,io);
+            SystemTimer = new Timer(RequestTimerInterrupt);
             ppu = new PPU(RequestLcdInterrupt, RequestVBlankInterrupt, renderCallback, io, vram, oam);
             InitializeHardwareRegisters();
         }
@@ -59,6 +59,7 @@ namespace GameboyTest
                 return eram[address - 0xE000]; // Subtract 0x2000 to map back to WRAM
 
             // 6. OAM (Object Attribute Memory for Sprites)
+
             if (address >= 0xFE00 && address <= 0xFE9F)
                 return oam[address - 0xFE00];
 
@@ -67,8 +68,10 @@ namespace GameboyTest
                 return 0xFF;
 
             // 8. I/O Registers (Joypad, Timers, Audio, LCD)
-
-
+            if (address == 0xFF07) {return  ((byte)((SystemTimer.TAC)|(0xf8))); }
+            if (address == 0xFF06) { return SystemTimer.TMA; }
+            if (address == 0xFF04) { return SystemTimer.DIV; }
+            if (address == 0xFF05) { return SystemTimer.TIMA; }
             if (address >= 0xFF00 && address <= 0xFF7F)
             {
                 // NOTE: When you build your Joypad or Timer classes, you will intercept
@@ -129,18 +132,19 @@ namespace GameboyTest
             // 8. I/O Registers
             if (address == 0xFF04)
             {
-                SystemTimer.ResetDiv();
-                io[0x4] = 0;// Writing ANYTHING to DIV resets it!
+                SystemTimer.DIV = 0;
                 return;
             }
 
-            if (address == 0xFF07) { SystemTimer.SetTAC(value); io[address - 0xFF00] = value; return; }
+            if (address == 0xFF07) {SystemTimer.TAC= value; return; }
+            if (address == 0xFF05) { SystemTimer.TIMA = value; io[0x5] = value; return; }
+            if (address == 0xFF06) { SystemTimer.TMA = value; return; }
 
             else if (address >= 0xFF00 && address <= 0xFF7F)
             {
                 // NOTE: Similar to reading, you will intercept specific writes here later.
                 // Example: Writing to 0xFF46 triggers a DMA transfer to copy sprite data.
-                if (io[0xF] == 228 && (value == 0))
+                if (io[0xF] == 228 && (value == 0) && address == 0xFF0F)
                 {
                     throw new Exception($"{value}");
                 }
