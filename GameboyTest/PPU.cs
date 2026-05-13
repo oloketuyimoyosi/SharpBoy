@@ -186,19 +186,7 @@ namespace GameboyTest
 
 
 
-            if ((lcd_on_off == false) && (IsLcdEnabled() == true))
-            {
 
-                ly_match = ly_match_stored;
-
-
-                ppu_mode_on_off = true;
-                lcd_on_off = true;
-            }
-            else
-            {
-                ppu_mode_on_off = false;
-            }
 
             int new_mode = calculatemode(scanlineCounter, LY, IsLcdEnabled(),PC);
 
@@ -265,7 +253,7 @@ namespace GameboyTest
 
             // 5. Fire the Interrupt with STAT Blocking! (Your 'triggered' array logic)
             // Only trigger if the internal hardware wire just transitioned from LOW to HIGH
-            if ((ly_check_triggered == false) && ((requestLyInterrupt || requestStatInterrupt) == true))
+            if ((ly_check_triggered == false) && ((requestLyInterrupt || requestStatInterrupt)))
             {
 
                 /*if (!statInterruptLine)

@@ -135,7 +135,7 @@ namespace GameboyTest
                 SystemTimer.DIV = 0;
                 return;
             }
-
+            if (address == 0xFF00) { io[0] = (byte)(value|0xCF); return; }
             if (address == 0xFF07) {SystemTimer.TAC= value; return; }
             if (address == 0xFF05) { SystemTimer.TIMA = value; io[0x5] = value; return; }
             if (address == 0xFF06) { SystemTimer.TMA = value; return; }

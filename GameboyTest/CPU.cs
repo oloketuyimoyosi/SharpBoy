@@ -1,4 +1,4 @@
-﻿using GameboyTest.Debugger;
+﻿
 
 namespace GameboyTest
 {
@@ -73,7 +73,7 @@ namespace GameboyTest
         public bool IME { get; set; } // Interrupt Master Enable
         public bool Halted { get; set; }
         public ulong TotalClockCycles { get; private set; }
-        public CpuLogger Logger { get; private set; } = new CpuLogger();
+
         public CPU(MemoryBus memoryBus)
         {
             this.bus = memoryBus;
