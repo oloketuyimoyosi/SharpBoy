@@ -26,6 +26,7 @@
 
         public byte Read(ushort address)
         {
+
             // 1. Fixed ROM Bank 0 (0x0000 - 0x3FFF)
             if (address <= 0x3FFF)
             {
@@ -46,19 +47,16 @@
                 if (ramAndRtcEnabled)
                 {
                     // If an RTC register is actively selected, return the clock data
-                    if (activeRtcRegister != -1)
-                    {
-                        return rtcData[activeRtcRegister];
-                    }
+
                     // Otherwise, return standard Save RAM data
-                    else if (ramBanks != null && currentRamBank < ramBanks.Length)
+                    if (ramBanks != null && currentRamBank < ramBanks.Length)
                     {
                         int offset = address - 0xA000;
                         return ramBanks[currentRamBank][offset];
                     }
                 }
             }
-
+            
             return 0xFF;
         }
 
@@ -72,7 +70,7 @@
             // 2. ROM Bank Select
             else if (address >= 0x2000 && address <= 0x3FFF)
             {
-                currentRomBank = value & 0x7F;
+                currentRomBank = value;
                 if (currentRomBank == 0) currentRomBank = 1;
             }
             // 3. RAM Bank OR RTC Register Select
@@ -103,11 +101,7 @@
             {
                 if (ramAndRtcEnabled)
                 {
-                    if (activeRtcRegister != -1)
-                    {
-                        rtcData[activeRtcRegister] = value;
-                    }
-                    else if (ramBanks != null && currentRamBank < ramBanks.Length)
+                    if (ramBanks != null && currentRamBank < ramBanks.Length)
                     {
                         int offset = address - 0xA000;
                         ramBanks[currentRamBank][offset] = value;

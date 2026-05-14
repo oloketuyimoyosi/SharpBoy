@@ -54,12 +54,15 @@ namespace GameboyTest
 
             // --- DEBUG MENU ---
             ToolStripMenuItem debugMenu = new ToolStripMenuItem("Debug");
+            ToolStripMenuItem viewVramItem = new ToolStripMenuItem("View VRAM...");
+            viewVramItem.Click += ViewVram_Click;
+            debugMenu.DropDownItems.Add(viewVramItem);
 
-            
+
             // --- NEW: Diagnostic Suite Item ---
 
             // Add items to Debug dropdown
- // Added to the dropdown here
+            // Added to the dropdown here
 
             // Add both main menus to the top bar
             menuStrip.Items.Add(fileMenu);
@@ -177,7 +180,97 @@ namespace GameboyTest
             }
         }
 
+        private void ViewVram_Click(object sender, EventArgs e)
+        {
+            // 1. Create a new separate window
+            Form vramForm = new Form
+            {
+                Text = "VRAM Viewer - Live",
+                ClientSize = new System.Drawing.Size(128 * 2, 256 * 2), // 2x Scale
+                FormBorderStyle = FormBorderStyle.FixedToolWindow,
+                StartPosition = FormStartPosition.CenterScreen
+            };
 
+            // 2. Create a SkiaSharp control for this specific window
+            SkiaSharp.Views.Desktop.SKControl vramCanvas = new SkiaSharp.Views.Desktop.SKControl
+            {
+                Dock = DockStyle.Fill
+            };
+
+            // 3. Attach the rendering logic
+            vramCanvas.PaintSurface += (s, args) =>
+            {
+                // Make sure to use YOUR actual variable name here (e.g., cpu, gb, etc.)
+                if (bus?.ppu == null)
+                {
+                    args.Surface.Canvas.Clear(SkiaSharp.SKColors.Black);
+                    return;
+                }
+
+                uint[] vramPixels = bus.ppu.GetVramTexture();
+                var info = new SkiaSharp.SKImageInfo(128, 256, SkiaSharp.SKColorType.Bgra8888, SkiaSharp.SKAlphaType.Premul);
+
+                using (var bitmap = new SkiaSharp.SKBitmap())
+                {
+                    unsafe
+                    {
+                        fixed (uint* ptr = vramPixels)
+                        {
+                            bitmap.InstallPixels(info, (IntPtr)ptr, info.RowBytes, delegate { });
+
+                            int scale = 2; // We are scaling the 128x256 image by 2x
+                            int scaledWidth = 128 * scale;
+                            int scaledHeight = 256 * scale;
+
+                            var destRect = new SkiaSharp.SKRect(0, 0, scaledWidth, scaledHeight);
+
+                            // 1. Draw the VRAM Bitmap
+                            using (var paint = new SkiaSharp.SKPaint { FilterQuality = SkiaSharp.SKFilterQuality.None })
+                            {
+                                args.Surface.Canvas.DrawBitmap(bitmap, destRect, paint);
+                            }
+
+                            // 2. Draw the Grid Lines on top!
+                            // Using a semi-transparent white so it doesn't completely block the pixels underneath
+                            using (var gridPaint = new SkiaSharp.SKPaint
+                            {
+                                Color = new SkiaSharp.SKColor(255, 255, 255, 75), // (R, G, B, Alpha)
+                                StrokeWidth = 1,
+                                IsAntialias = false
+                            })
+                            {
+                                int tileSize = 8 * scale; // An 8-pixel tile scaled up by 2x is 16 pixels wide on screen
+
+                                // Draw Vertical Lines
+                                for (int x = 0; x <= scaledWidth; x += tileSize)
+                                {
+                                    args.Surface.Canvas.DrawLine(x, 0, x, scaledHeight, gridPaint);
+                                }
+
+                                // Draw Horizontal Lines
+                                for (int y = 0; y <= scaledHeight; y += tileSize)
+                                {
+                                    args.Surface.Canvas.DrawLine(0, y, scaledWidth, y, gridPaint);
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+
+            // 4. Create a timer to refresh this window at ~30 FPS
+            // This allows you to watch tiles animate in real-time without slowing down the main game!
+            System.Windows.Forms.Timer refreshTimer = new System.Windows.Forms.Timer { Interval = 33 };
+            refreshTimer.Tick += (s, args) => vramCanvas.Invalidate();
+
+            // 5. Clean up when the user closes the debug window
+            vramForm.FormClosed += (s, args) => refreshTimer.Stop();
+
+            // 6. Start the timer and show the window
+            vramForm.Controls.Add(vramCanvas);
+            refreshTimer.Start();
+            vramForm.Show(); // .Show() makes it non-blocking so the main game keeps running!
+        }
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             // Kill the emulator loop before Windows destroys the window

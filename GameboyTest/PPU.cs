@@ -32,7 +32,7 @@ namespace GameboyTest
         private int[] scanlineRawColors = new int[160];
 
         // Hardware Quirk: The window has its own hidden internal line counter!
-        private int windowLineCounter = 0;
+        private byte windowLineCounter = 0;
         // --- TIMING CONSTANTS ---
         private const int SCANLINE_CYCLES = 456;
         private const int MODE_2_BOUND = 80;
@@ -345,7 +345,11 @@ namespace GameboyTest
 
             // Pre-compute control flags (Exactly like your Python code)
 
-
+            if (LY > 143)
+            {
+                windowLineCounter = 0;
+                return;
+            }
             bool tileDataSigned = (LCDC & 0x10) == 0; // Bit 4
             ushort tileDataAddress = (ushort)(tileDataSigned ? 0x0800 : 0x0000); // Offset into VRAM array
 
@@ -422,7 +426,7 @@ namespace GameboyTest
             }
 
             // If the window was drawn on this scanline, increment its hidden counter
-            if (usingWindow) windowLineCounter++;
+            if (usingWindow) { windowLineCounter++; }
         }
 
         private void RenderSprites()
@@ -520,6 +524,54 @@ namespace GameboyTest
                     FrameBuffer[LY * 160 + pixelX] = Colors[paletteVal];
                 }
             }
+
+        }
+        public uint[] GetVramTexture()
+        {
+            // 128 pixels wide x 256 pixels high
+            uint[] vramBuffer = new uint[128 * 256];
+
+            // Loop through all 512 tiles in VRAM
+            for (int tileIndex = 0; tileIndex < 512; tileIndex++)
+            {
+                // Calculate where this tile sits on our 16x32 grid
+                int gridX = tileIndex % 16;
+                int gridY = tileIndex / 16;
+
+                // Calculate the starting pixel coordinates for this tile
+                int pixelStartX = gridX * 8;
+                int pixelStartY = gridY * 8;
+
+                // Loop through the 8 rows of the tile
+                for (int y = 0; y < 8; y++)
+                {
+                    // Each row takes 2 bytes. Calculate the address in VRAM.
+                    int dataAddress = (tileIndex * 16) + (y * 2);
+                    byte data1 = VRAM[dataAddress];
+                    byte data2 = VRAM[dataAddress + 1];
+
+                    // Loop through the 8 pixels of the row
+                    for (int x = 0; x < 8; x++)
+                    {
+                        // Extract the 2-bit color index for this pixel
+                        int colorBit = 7 - x;
+                        int colorNum = (((data2 >> colorBit) & 1) << 1) | ((data1 >> colorBit) & 1);
+
+                        // Map it through the Background Palette (BGP)
+                        int paletteVal = (BGP >> (colorNum * 2)) & 3;
+
+                        // Calculate the final 1D array index for our 128x256 buffer
+                        int drawX = pixelStartX + x;
+                        int drawY = pixelStartY + y;
+                        int bufferIndex = (drawY * 128) + drawX;
+
+                        // Set the color using your existing SkiaSharp Colors array
+                        vramBuffer[bufferIndex] = Colors[paletteVal];
+                    }
+                }
+            }
+
+            return vramBuffer;
         }
     }
 }
