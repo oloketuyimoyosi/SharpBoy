@@ -1,4 +1,5 @@
 ﻿using GameboyTest.MBC;
+using System.Diagnostics;
 
 namespace GameboyTest
 {
@@ -7,6 +8,7 @@ namespace GameboyTest
         private IMbc mbc;
         public Timer SystemTimer { get; private set; }
         public PPU ppu { get; private set; }
+        private byte OAM_COUNTER = 0;
         public enum InterruptType
         {
             VBlank = 0,
@@ -24,7 +26,8 @@ namespace GameboyTest
         public byte[] io = new byte[0x80];     // 128 bytes I/O Registers (0xFF00 - 0xFF7F)
         private byte[] hram = new byte[0x7F];   // 127 bytes High RAM (0xFF80 - 0xFFFE)
         public byte ieRegister = 0x00;         // 1 byte Interrupt Enable (0xFFFF)
-
+        public bool oam_switch = false;
+        public byte oam_store = 0;
         public MemoryBus(IMbc activeMbc, Action renderCallback)
         {
             this.mbc = activeMbc;
@@ -59,15 +62,26 @@ namespace GameboyTest
                 return eram[address - 0xE000]; // Subtract 0x2000 to map back to WRAM
 
             // 6. OAM (Object Attribute Memory for Sprites)
-
+            
             if (address >= 0xFE00 && address <= 0xFE9F)
-                return oam[address - 0xFE00];
+                if (oam_switch)
+                {
+                    return 0xFF;
+                }
+                else
+                {
+                    return oam[address - 0xFE00];
+                }
+                    
 
             // 7. Unusable Space (Nintendo says do not use, usually returns 0xFF)
             if (address >= 0xFEA0 && address <= 0xFEFF)
                 return 0xFF;
-
-            // 8. I/O Registers (Joypad, Timers, Audio, LCD)
+            if (address == 0xFF46)
+            {
+                return oam_store;
+            }
+                // 8. I/O Registers (Joypad, Timers, Audio, LCD)
             if (address == 0xFF07) {return  ((byte)((SystemTimer.TAC)|(0xf8))); }
             if (address == 0xFF06) { return SystemTimer.TMA; }
             if (address == 0xFF04) { return SystemTimer.DIV; }
@@ -139,7 +153,12 @@ namespace GameboyTest
             if (address == 0xFF07) {SystemTimer.TAC= value; return; }
             if (address == 0xFF05) { SystemTimer.TIMA = value; io[0x5] = value; return; }
             if (address == 0xFF06) { SystemTimer.TMA = value; return; }
-
+            if (address == 0xFF46)
+            {
+                DmaTransfer(value);
+                
+                oam_store = value;
+            }
             else if (address >= 0xFF00 && address <= 0xFF7F)
             {
                 // NOTE: Similar to reading, you will intercept specific writes here later.
@@ -263,6 +282,46 @@ namespace GameboyTest
             // LCD STAT is Bit 1 of the IF Register (0xFF0F)
             byte currentIF = ReadByte(0xFF0F);
             WriteByte(0xFF0F, (byte)(currentIF | 0x02));
+        }
+        public void DmaTransfer(byte value)
+        {
+            byte data;
+            ushort sourceAddress = (ushort)(value << 8);
+            ushort address = (ushort)(sourceAddress + OAM_COUNTER);
+            
+            // OAM DMA always copies exactly 160 bytes (40 sprites * 4 bytes each)
+            if ((address >= 0xFE00) && (address <= 0XFE9F))
+            {
+                
+                data = wram[(address - 0xF000) + 0x1000];
+
+            }
+            else if ((address >= 0xE000) && (address <= 0XFDFF))
+            {
+                data = wram[(address - 0xE000)];
+
+            }
+            else if ((address >= 0xFF00) && (address <= 0XFFFF))
+            {
+
+                data = wram[(address - 0xF000) + 0x1000];
+
+            }
+            else
+            {
+                
+                data = ReadByte(address);
+            }
+            WriteByte((ushort)(0xFE00 + OAM_COUNTER), data);
+            OAM_COUNTER++;
+            oam_switch = true;
+
+            if (OAM_COUNTER >= 0xA1)
+            {
+                OAM_COUNTER = 0;
+                oam_switch = false;
+            }
+            
         }
     }
 }

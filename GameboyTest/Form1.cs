@@ -136,6 +136,10 @@ namespace GameboyTest
                         {
                             activeMbc = new Mbc3(activeCartridge.RomBanks, activeCartridge.RamBanks);
                         }
+                        else if (activeCartridge.MbcType == "MBC5")
+                        {
+                            activeMbc = new Mbc5(activeCartridge.RomBanks, activeCartridge.RamBanks);
+                        }
                         else
                         {
                             MessageBox.Show($"Chip {activeCartridge.MbcType} is not implemented yet!");

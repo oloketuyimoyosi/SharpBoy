@@ -87,6 +87,10 @@ namespace GameboyTest
             // Every memory access takes 1 M-Cycle, which is 4 T-Cycles
             TotalClockCycles += 4;
             bus.SystemTimer.Tick(4);
+            if (bus.oam_switch)
+            {
+                bus.DmaTransfer(bus.oam_store);
+            }
             bus.ppu.Tick(4,PC, Halted,bus.ieRegister,IME,Interrupt_on_Line);
             // NOTE FOR LATER: This is exactly where you will sync the rest of the hardware!
             //ppu.Step(4);
@@ -202,7 +206,12 @@ namespace GameboyTest
         {
             Tick();
             bus.WriteByte(address, value);
-
+            if (address == 0xFF46)
+            {
+                bus.oam_switch = false;
+                Tick(); // OAM DMA takes an extra 4 T-Cycles after the write
+                bus.oam_switch = true;
+            }
 
         }
         private void CheckInterrupts()

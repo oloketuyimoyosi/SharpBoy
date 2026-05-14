@@ -78,7 +78,7 @@ namespace GameboyTest
         }// 0xFF43
         public byte WY
         {
-            get => (byte)(io[0x4A] - 1); // 0xFF4A
+            get => (byte)(io[0x4A]); // 0xFF4A
             set => io[0x4A] = value;
         }   // 0xFF4A
         public byte WX
@@ -129,13 +129,11 @@ namespace GameboyTest
             // If we finished a full horizontal line...
             if ((scanlineCounter <= 0))
             {
-                if (LY < 144 && (calculatemode(scanlineCounter,LY,IsLcdEnabled(),PC) == 0))
-                {
-                    DrawScanline();
 
-                }
+
                 scanlineCounter = SCANLINE_CYCLES;
                 LY++;
+                tick = false;
 
 
                 if (LY == 144)
@@ -160,7 +158,15 @@ namespace GameboyTest
             }
 
             UpdateStatus(PC,halted,ie,IME,Interrupt_on_Line);
-
+            if (!tick)
+            {
+                if (LY < 144 && (calculatemode(scanlineCounter, LY, IsLcdEnabled(), PC) == 0)) // THIS HELP FIX ALOT OF PPU PROBLEMS! Mode 0 only starts AFTER the full 456 cycles, so we wait until the next tick to draw the scanline. This prevents all sorts of weird edge cases where games try to change PPU state mid-scanline. 
+                    //ALSO HELP FIX POCKET.GB WERID GRAPHICS NONSENSE(COOL STUFF ACTUALLY).
+                {
+                    DrawScanline();
+                    tick = true;
+                }
+            }
 
             // Update the STAT register based on our current cycle and LY
 
@@ -355,7 +361,7 @@ namespace GameboyTest
             // Bit 5
 
             // Check if the window is currently visible on this scanline
-
+            
 
             // --- ULTRA-FAST SCANLINE LOOP ---
             for (int pixel = 0; pixel < 160; pixel++)
@@ -367,9 +373,10 @@ namespace GameboyTest
                 xPos &= 255;
                 yPos &= 255;
 
-                if (windowEnabled && LY > WY && pixel > WX - 1)
+                if (windowEnabled && LY >= WY && pixel > WX - 1)
                 {
                     usingWindow = true;
+                    
                 }
                 // Are we drawing the window right now?
                 if (usingWindow)
