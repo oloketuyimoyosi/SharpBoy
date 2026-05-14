@@ -58,7 +58,10 @@ namespace GameboyTest
             viewVramItem.Click += ViewVram_Click;
             debugMenu.DropDownItems.Add(viewVramItem);
 
+            ToolStripMenuItem viewGraphicsItem = new ToolStripMenuItem("Graphics Debugger...");
+            viewGraphicsItem.Click += OpenGraphicsDebugger_Click;
 
+            debugMenu.DropDownItems.Add(viewGraphicsItem);
             // --- NEW: Diagnostic Suite Item ---
 
             // Add items to Debug dropdown
@@ -179,7 +182,201 @@ namespace GameboyTest
                 }
             }
         }
+        private void OpenGraphicsDebugger_Click(object sender, EventArgs e)
+        {
+            Form debugForm = new Form
+            {
+                Text = "Game Boy Graphics Debugger",
+                ClientSize = new System.Drawing.Size(512 + 200, 512),
+                FormBorderStyle = FormBorderStyle.FixedToolWindow,
+                StartPosition = FormStartPosition.CenterScreen
+            };
 
+            // --- 1. DECLARE CONTROLS FIRST (So our canvases can read them) ---
+            CheckBox chkShowGrid = new CheckBox { Text = "Show Grid", Checked = true, Location = new System.Drawing.Point(10, 20) };
+            ComboBox cmbZoom = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new System.Drawing.Point(10, 45), Width = 120 };
+            cmbZoom.Items.AddRange(new object[] { "1x Zoom", "2x Zoom", "4x Zoom" });
+            cmbZoom.SelectedIndex = 1; // Default to 2x
+
+            ComboBox cmbPalette = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new System.Drawing.Point(10, 20), Width = 150 };
+            cmbPalette.Items.AddRange(new object[] { "Background (BGP)", "Sprite 0 (OBP0)", "Sprite 1 (OBP1)" });
+            cmbPalette.SelectedIndex = 0;
+
+            CheckBox chkUseMap2 = new CheckBox { Text = "Use Map 2 (0x9C00)", Location = new System.Drawing.Point(10, 20), Width = 150 };
+
+            Label lblTileData = new Label { Text = "ID: --\nAddr: --", Dock = DockStyle.Top, Height = 40 };
+
+            // --- 2. THE TABS & CANVASES ---
+            TabControl tabs = new TabControl { Dock = DockStyle.Fill };
+
+            // Helper function to get the current zoom scale multiplier
+            int GetScale() => cmbZoom.SelectedIndex == 0 ? 1 : (cmbZoom.SelectedIndex == 1 ? 2 : 4);
+
+            // VRAM TAB
+            TabPage tabVram = new TabPage("VRAM");
+            var vramCanvas = new SkiaSharp.Views.Desktop.SKControl { Dock = DockStyle.Fill };
+            vramCanvas.PaintSurface += (s, args) =>
+            {
+                if (bus?.ppu == null) { args.Surface.Canvas.Clear(SkiaSharp.SKColors.Black); return; }
+
+                // FUNCTIONAL PALETTE: Pass the dropdown index to the PPU!
+                uint[] pixels = bus.ppu.GetVramTexture(cmbPalette.SelectedIndex);
+                var info = new SkiaSharp.SKImageInfo(128, 256, SkiaSharp.SKColorType.Bgra8888, SkiaSharp.SKAlphaType.Premul);
+                using (var bitmap = new SkiaSharp.SKBitmap())
+                {
+                    unsafe
+                    {
+                        fixed (uint* ptr = pixels)
+                        {
+                            bitmap.InstallPixels(info, (IntPtr)ptr, info.RowBytes, delegate { });
+                            int scale = GetScale(); // FUNCTIONAL ZOOM!
+                            var destRect = new SkiaSharp.SKRect(0, 0, 128 * scale, 256 * scale);
+
+                            using (var paint = new SkiaSharp.SKPaint { FilterQuality = SkiaSharp.SKFilterQuality.None })
+                                args.Surface.Canvas.DrawBitmap(bitmap, destRect, paint);
+
+                            if (chkShowGrid.Checked) // FUNCTIONAL GRID!
+                            {
+                                using (var gridPaint = new SkiaSharp.SKPaint { Color = new SkiaSharp.SKColor(255, 255, 255, 75), StrokeWidth = 1 })
+                                {
+                                    int tileSize = 8 * scale;
+                                    for (int x = 0; x <= 128 * scale; x += tileSize) args.Surface.Canvas.DrawLine(x, 0, x, 256 * scale, gridPaint);
+                                    for (int y = 0; y <= 256 * scale; y += tileSize) args.Surface.Canvas.DrawLine(0, y, 128 * scale, y, gridPaint);
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+
+            // FUNCTIONAL HOVER INSPECTOR
+            vramCanvas.MouseMove += (s, mouseArgs) =>
+            {
+                int scale = GetScale();
+                int pixelX = mouseArgs.X / scale;
+                int pixelY = mouseArgs.Y / scale;
+
+                if (pixelX >= 0 && pixelX < 128 && pixelY >= 0 && pixelY < 256)
+                {
+                    int tileIndex = ((pixelY / 8) * 16) + (pixelX / 8);
+                    lblTileData.Text = $"ID: 0x{tileIndex:X2}\nAddr: 0x{(0x8000 + (tileIndex * 16)):X4}";
+                }
+            };
+            tabVram.Controls.Add(vramCanvas);
+
+            // BG MAP TAB
+            // BG MAP TAB
+            TabPage tabBg = new TabPage("BG Map");
+            var bgCanvas = new SkiaSharp.Views.Desktop.SKControl { Dock = DockStyle.Fill };
+            bgCanvas.PaintSurface += (s, args) =>
+            {
+                if (bus?.ppu == null) { args.Surface.Canvas.Clear(SkiaSharp.SKColors.Black); return; }
+
+                uint[] pixels = bus.ppu.GetBackgroundMapTexture(chkUseMap2.Checked);
+                var info = new SkiaSharp.SKImageInfo(256, 256, SkiaSharp.SKColorType.Bgra8888, SkiaSharp.SKAlphaType.Premul);
+                using (var bitmap = new SkiaSharp.SKBitmap())
+                {
+                    unsafe
+                    {
+                        fixed (uint* ptr = pixels)
+                        {
+                            bitmap.InstallPixels(info, (IntPtr)ptr, info.RowBytes, delegate { });
+                            int scale = GetScale();
+
+                            // 1. Draw the actual Map
+                            using (var paint = new SkiaSharp.SKPaint { FilterQuality = SkiaSharp.SKFilterQuality.None })
+                                args.Surface.Canvas.DrawBitmap(bitmap, new SkiaSharp.SKRect(0, 0, 256 * scale, 256 * scale), paint);
+
+                            // 2. Draw the optional Grid
+                            if (chkShowGrid.Checked)
+                            {
+                                using (var gridPaint = new SkiaSharp.SKPaint { Color = new SkiaSharp.SKColor(255, 255, 255, 75), StrokeWidth = 1 })
+                                {
+                                    int tileSize = 8 * scale;
+                                    for (int x = 0; x <= 256 * scale; x += tileSize) args.Surface.Canvas.DrawLine(x, 0, x, 256 * scale, gridPaint);
+                                    for (int y = 0; y <= 256 * scale; y += tileSize) args.Surface.Canvas.DrawLine(0, y, 256 * scale, y, gridPaint);
+                                }
+                            }
+
+                            // 3. --- DRAW THE VIEWPORT CAMERA BOX ---
+                            int scx = bus.ppu.SCX;
+                            int scy = bus.ppu.SCY;
+
+                            using (var viewPaint = new SkiaSharp.SKPaint
+                            {
+                                Color = SkiaSharp.SKColors.Red, // Bright red so it stands out!
+                                Style = SkiaSharp.SKPaintStyle.Stroke,
+                                StrokeWidth = 2 * scale // Thicker line based on zoom
+                            })
+                            {
+                                // The Game Boy screen is 160x144.
+                                // Because the map is 256x256 and wraps around, if the camera crosses the right 
+                                // or bottom edge, it appears on the opposite side. 
+                                // We draw the rectangle up to 4 times (offset by 256) to handle this wrapping perfectly!
+                                for (int wrapX = 0; wrapX < 2; wrapX++)
+                                {
+                                    for (int wrapY = 0; wrapY < 2; wrapY++)
+                                    {
+                                        int drawX = (scx - (wrapX * 256)) * scale;
+                                        int drawY = (scy - (wrapY * 256)) * scale;
+
+                                        args.Surface.Canvas.DrawRect(drawX, drawY, 160 * scale, 144 * scale, viewPaint);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+            tabBg.Controls.Add(bgCanvas);
+
+            tabs.Controls.Add(tabVram);
+            tabs.Controls.Add(tabBg);
+
+            // --- 3. WIRE UP UI EVENTS (Instant Redraws) ---
+            // When an option is changed, we force the canvases to redraw immediately!
+            cmbZoom.SelectedIndexChanged += (s, ev) => { vramCanvas.Invalidate(); bgCanvas.Invalidate(); };
+            cmbPalette.SelectedIndexChanged += (s, ev) => vramCanvas.Invalidate();
+            chkShowGrid.CheckedChanged += (s, ev) => { vramCanvas.Invalidate(); bgCanvas.Invalidate(); };
+            chkUseMap2.CheckedChanged += (s, ev) => bgCanvas.Invalidate();
+
+            // --- 4. ASSEMBLE THE RIGHT PANEL ---
+            Panel optionsPanel = new Panel { Dock = DockStyle.Right, Width = 200, Padding = new Padding(10), BackColor = System.Drawing.Color.WhiteSmoke };
+
+            GroupBox grpMaps = new GroupBox { Text = "Background Maps", Dock = DockStyle.Top, Height = 50 };
+            grpMaps.Controls.Add(chkUseMap2);
+
+            GroupBox grpPalette = new GroupBox { Text = "Render Palette", Dock = DockStyle.Top, Height = 55 };
+            grpPalette.Controls.Add(cmbPalette);
+
+            GroupBox grpDisplay = new GroupBox { Text = "Display", Dock = DockStyle.Top, Height = 80 };
+            grpDisplay.Controls.Add(chkShowGrid);
+            grpDisplay.Controls.Add(cmbZoom);
+
+            Label lblHoverTitle = new Label { Text = "Tile Inspector:", Font = new System.Drawing.Font("Segoe UI", 9, System.Drawing.FontStyle.Bold), Dock = DockStyle.Top, Height = 25 };
+
+            // Add in reverse order for DockStyle.Top
+            optionsPanel.Controls.Add(grpMaps);
+            optionsPanel.Controls.Add(grpPalette);
+            optionsPanel.Controls.Add(grpDisplay);
+            optionsPanel.Controls.Add(lblTileData);
+            optionsPanel.Controls.Add(lblHoverTitle);
+
+            debugForm.Controls.Add(optionsPanel);
+            debugForm.Controls.Add(tabs);
+
+            // --- 5. TIMER LOOP ---
+            System.Windows.Forms.Timer refreshTimer = new System.Windows.Forms.Timer { Interval = 33 };
+            refreshTimer.Tick += (s, args) =>
+            {
+                if (tabs.SelectedIndex == 0) vramCanvas.Invalidate();
+                else if (tabs.SelectedIndex == 1) bgCanvas.Invalidate();
+            };
+            debugForm.FormClosed += (s, args) => refreshTimer.Stop();
+
+            refreshTimer.Start();
+            debugForm.Show();
+        }
         private void ViewVram_Click(object sender, EventArgs e)
         {
             // 1. Create a new separate window
@@ -196,7 +393,30 @@ namespace GameboyTest
             {
                 Dock = DockStyle.Fill
             };
+            // --- HOVER INFO LOGIC ---
+            vramCanvas.MouseMove += (s, mouseArgs) =>
+            {
+                int scale = 2; // Make sure this matches the scale factor used in your Paint event!
 
+                // Convert the mouse coordinates back down to the 128x256 internal resolution
+                int pixelX = mouseArgs.X / scale;
+                int pixelY = mouseArgs.Y / scale;
+
+                // Ensure we are inside the bounds of the image
+                if (pixelX >= 0 && pixelX < 128 && pixelY >= 0 && pixelY < 256)
+                {
+                    // Calculate which of the 16x32 tiles the mouse is over
+                    int tileCol = pixelX / 8;
+                    int tileRow = pixelY / 8;
+                    int tileIndex = (tileRow * 16) + tileCol;
+
+                    // Calculate the actual memory address in VRAM (starts at 0x8000)
+                    int vramAddress = 0x8000 + (tileIndex * 16);
+
+                    // Update the Window Title bar with the live data!
+                    vramForm.Text = $"VRAM - Tile ID: 0x{tileIndex:X2} | Address: 0x{vramAddress:X4}";
+                }
+            };
             // 3. Attach the rendering logic
             vramCanvas.PaintSurface += (s, args) =>
             {
@@ -209,6 +429,9 @@ namespace GameboyTest
 
                 uint[] vramPixels = bus.ppu.GetVramTexture();
                 var info = new SkiaSharp.SKImageInfo(128, 256, SkiaSharp.SKColorType.Bgra8888, SkiaSharp.SKAlphaType.Premul);
+                // Inside your new ViewBgMap_Click method:
+
+                // ... the rest is identical to the VRAM viewer code!
 
                 using (var bitmap = new SkiaSharp.SKBitmap())
                 {

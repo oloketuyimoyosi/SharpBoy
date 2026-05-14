@@ -345,11 +345,7 @@ namespace GameboyTest
 
             // Pre-compute control flags (Exactly like your Python code)
 
-            if (LY > 143)
-            {
-                windowLineCounter = 0;
-                return;
-            }
+
             bool tileDataSigned = (LCDC & 0x10) == 0; // Bit 4
             ushort tileDataAddress = (ushort)(tileDataSigned ? 0x0800 : 0x0000); // Offset into VRAM array
 
@@ -526,10 +522,16 @@ namespace GameboyTest
             }
 
         }
-        public uint[] GetVramTexture()
+        // Add paletteChoice parameter: 0 = BGP, 1 = OBP0, 2 = OBP1
+        public uint[] GetVramTexture(int paletteChoice = 0)
         {
             // 128 pixels wide x 256 pixels high
             uint[] vramBuffer = new uint[128 * 256];
+
+            // Determine which palette register to use based on the dropdown
+            byte targetPalette = BGP;
+            if (paletteChoice == 1) targetPalette = OBP0;
+            if (paletteChoice == 2) targetPalette = OBP1;
 
             // Loop through all 512 tiles in VRAM
             for (int tileIndex = 0; tileIndex < 512; tileIndex++)
@@ -557,8 +559,8 @@ namespace GameboyTest
                         int colorBit = 7 - x;
                         int colorNum = (((data2 >> colorBit) & 1) << 1) | ((data1 >> colorBit) & 1);
 
-                        // Map it through the Background Palette (BGP)
-                        int paletteVal = (BGP >> (colorNum * 2)) & 3;
+                        // USE THE NEW TARGET PALETTE HERE!
+                        int paletteVal = (targetPalette >> (colorNum * 2)) & 3;
 
                         // Calculate the final 1D array index for our 128x256 buffer
                         int drawX = pixelStartX + x;
@@ -572,6 +574,114 @@ namespace GameboyTest
             }
 
             return vramBuffer;
+        }
+        public uint[] GetBackgroundMapTexture(bool useMap2 = false)
+        {
+            // The BG Map is 32x32 tiles (256x256 pixels)
+            uint[] bgBuffer = new uint[256 * 256];
+
+            // Determine which map to read based on the parameter
+            // Map 1 starts at VRAM offset 0x1800, Map 2 at 0x1C00
+            ushort mapBase = (ushort)(useMap2 ? 0x1C00 : 0x1800);
+
+            // Check LCDC Bit 4 to see if we are using signed or unsigned tile data
+            bool tileDataSigned = (LCDC & 0x10) == 0;
+            ushort tileDataBase = (ushort)(tileDataSigned ? 0x0800 : 0x0000);
+
+            // Loop through the 32x32 tile grid
+            for (int tileY = 0; tileY < 32; tileY++)
+            {
+                for (int tileX = 0; tileX < 32; tileX++)
+                {
+                    // Fetch the Tile ID from the background map
+                    int mapIndex = mapBase + (tileY * 32) + tileX;
+                    int tileNum = VRAM[mapIndex];
+
+                    // Adjust the Tile ID if the addressing mode is signed
+                    if (tileDataSigned)
+                    {
+                        tileNum = (sbyte)tileNum;
+                        tileNum += 128;
+                    }
+
+                    // Draw this specific 8x8 tile into the larger buffer
+                    for (int y = 0; y < 8; y++)
+                    {
+                        int dataAddress = tileDataBase + (tileNum * 16) + (y * 2);
+                        byte data1 = VRAM[dataAddress];
+                        byte data2 = VRAM[dataAddress + 1];
+
+                        for (int x = 0; x < 8; x++)
+                        {
+                            int colorBit = 7 - x;
+                            int colorNum = (((data2 >> colorBit) & 1) << 1) | ((data1 >> colorBit) & 1);
+                            int paletteVal = (BGP >> (colorNum * 2)) & 3;
+
+                            // Calculate the exact pixel coordinate on the 256x256 map
+                            int pixelX = (tileX * 8) + x;
+                            int pixelY = (tileY * 8) + y;
+
+                            bgBuffer[(pixelY * 256) + pixelX] = Colors[paletteVal];
+                        }
+                    }
+                }
+            }
+
+            return bgBuffer;
+        }
+        public uint[] GetOamTexture()
+        {
+            // A grid of 8 columns by 5 rows. 
+            // We allocate 8x16 pixels per slot to safely support 8x16 sprite mode.
+            // Width: 8 cols * 8 pixels = 64
+            // Height: 5 rows * 16 pixels = 80
+            uint[] oamBuffer = new uint[64 * 80];
+
+            bool use8x16 = (LCDC & 0x04) != 0;
+            int spriteHeight = use8x16 ? 16 : 8;
+
+            // Loop through all 40 sprites in OAM
+            for (int i = 0; i < 40; i++)
+            {
+                int oamIndex = i * 4;
+                int tileLocation = OAM[oamIndex + 2];
+                int attributes = OAM[oamIndex + 3];
+
+                bool xFlip = (attributes & 0x20) != 0;
+                bool yFlip = (attributes & 0x40) != 0;
+                byte palette = ((attributes & 0x10) != 0) ? OBP1 : OBP0;
+
+                if (use8x16) tileLocation &= 0xFE;
+
+                // Calculate where this sprite sits in our 8x5 display grid
+                int gridX = (i % 8) * 8;
+                int gridY = (i / 8) * 16;
+
+                for (int y = 0; y < spriteHeight; y++)
+                {
+                    int line = yFlip ? (spriteHeight - 1 - y) : y;
+                    ushort dataAddress = (ushort)((tileLocation * 16) + (line * 2));
+                    byte data1 = VRAM[dataAddress];
+                    byte data2 = VRAM[dataAddress + 1];
+
+                    for (int x = 0; x < 8; x++)
+                    {
+                        int colorBit = xFlip ? x : (7 - x);
+                        int colorNum = (((data2 >> colorBit) & 1) << 1) | ((data1 >> colorBit) & 1);
+
+                        // For the viewer, we can leave Color 0 as black/transparent
+                        if (colorNum == 0) continue;
+
+                        int paletteVal = (palette >> (colorNum * 2)) & 3;
+
+                        int drawX = gridX + x;
+                        int drawY = gridY + y;
+
+                        oamBuffer[(drawY * 64) + drawX] = Colors[paletteVal];
+                    }
+                }
+            }
+            return oamBuffer;
         }
     }
 }
