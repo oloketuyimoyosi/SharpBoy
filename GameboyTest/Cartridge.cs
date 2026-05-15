@@ -2,6 +2,7 @@
 
 namespace GameboyTest
 {
+    public enum GbcMode { Dmg, CgbSupported, CgbExclusive }
     public class Cartridge
     {
         public string Title { get; private set; }
@@ -17,7 +18,10 @@ namespace GameboyTest
         public byte[][] RomBanks { get; private set; }
         public byte[][] RamBanks { get; private set; }
 
-        // --- C# Equivalents of your Python Dictionaries ---
+        //GBC Color Flag (0x0143) is not included in the original Python code, but we can easily add it if needed.
+        public GbcMode ColorMode { get; private set; }
+
+        
 
         private readonly Dictionary<byte, (string Mbc, string Feature)> MbcTypeMap = new Dictionary<byte, (string, string)>
         {
@@ -81,7 +85,11 @@ namespace GameboyTest
                 ParseHeader(rawFile);
                 SplitRomBanks(rawFile);
                 InitializeRamBanks();
+                byte cgbFlag = RomBanks[0][0x0143]; // Read the flag from Bank 0
 
+                if (cgbFlag == 0x80) ColorMode = GbcMode.CgbSupported;
+                else if (cgbFlag == 0xC0) ColorMode = GbcMode.CgbExclusive;
+                else ColorMode = GbcMode.Dmg;
                 IsLoaded = true;
                 return true;
             }

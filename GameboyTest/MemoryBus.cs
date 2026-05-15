@@ -19,8 +19,8 @@ namespace GameboyTest
         }
         // Internal Game Boy Memory Arrays
         public byte[] vram = new byte[0x2000]; // 8KB Video RAM (0x8000 - 0x9FFF)
-        private byte[] wram = new byte[0x2000]; // 8KB Working RAM (0xC000 - 0xDFFF)
-        private byte[] eram = new byte[0x1E00]; // External RAM (0xA000 - 0xBFFF) - Size depends on cartridge, accessed via MBC    
+        private byte[] wram = new byte[0x8000]; // Expanded to 32KB (8 banks of 4096 bytes) for GBC!
+        private byte[] eram = new byte[0x1E00];
         // --- NEW HARDWARE ARRAYS ---
         public byte[] oam = new byte[0xA0];    // 160 bytes Sprite RAM (0xFE00 - 0xFE9F)
         public byte[] io = new byte[0x80];     // 128 bytes I/O Registers (0xFF00 - 0xFF7F)
@@ -28,11 +28,26 @@ namespace GameboyTest
         public byte ieRegister = 0x00;         // 1 byte Interrupt Enable (0xFFFF)
         public bool oam_switch = false;
         public byte oam_store = 0;
+        public byte RP = 0x00;
+        public byte SVBK
+        {
+            get => (byte)(io[0x70] | 0xF8);
+            set => io[0x70] = (byte)(value | 0xF8);
+        }
+
+        // --- GBC HDMA STATE ---
+        private bool hdmaActive = false;
+        private int hdmaBlocksRemaining = 0;
+        private ushort hdmaSource = 0;
+        private ushort hdmaDest = 0;
+        // --- GBC SPEED SWITCH REGISTER ---
+        // 0xFF4D (KEY1). Default is 0x7E (Normal speed, bits 1-6 are always 1)
+        public byte KEY1 = 0x7E;
         public MemoryBus(IMbc activeMbc, Action renderCallback)
         {
             this.mbc = activeMbc;
             SystemTimer = new Timer(RequestTimerInterrupt);
-            ppu = new PPU(RequestLcdInterrupt, RequestVBlankInterrupt, renderCallback, io, vram, oam);
+            ppu = new PPU(RequestLcdInterrupt, RequestVBlankInterrupt, renderCallback, io,PerformHdmaBlock);
             InitializeHardwareRegisters();
         }
 
@@ -47,7 +62,7 @@ namespace GameboyTest
 
             // 2. Video RAM
             if (address >= 0x8000 && address <= 0x9FFF)
-                return vram[address - 0x8000];
+                return ppu.ReadVram(address); ;
 
             // 3. External Cartridge RAM
             if (address >= 0xA000 && address <= 0xBFFF)
@@ -55,8 +70,20 @@ namespace GameboyTest
 
             // 4. Working RAM
             if (address >= 0xC000 && address <= 0xDFFF)
-                return wram[address - 0xC000];
-
+            {
+                // 0xC000 - 0xCFFF is ALWAYS Bank 0
+                if (address <= 0xCFFF)
+                {
+                    return wram[address - 0xC000];
+                }
+                // 0xD000 - 0xDFFF is Switchable Bank 1-7
+                else
+                {
+                    int bank = SVBK & 0x07;
+                    if (bank == 0) bank = 1; // Bank 0 maps to Bank 1 in this region!
+                    return wram[(bank * 0x1000) + (address - 0xD000)];
+                }
+            }
             // 5. Echo RAM (Mirrors 0xC000 - 0xDDFF)
             if (address >= 0xE000 && address <= 0xFDFF)
                 return eram[address - 0xE000]; // Subtract 0x2000 to map back to WRAM
@@ -81,11 +108,21 @@ namespace GameboyTest
             {
                 return oam_store;
             }
-                // 8. I/O Registers (Joypad, Timers, Audio, LCD)
+            // 8. I/O Registers (Joypad, Timers, Audio, LCD)
             if (address == 0xFF07) {return  ((byte)((SystemTimer.TAC)|(0xf8))); }
             if (address == 0xFF06) { return SystemTimer.TMA; }
             if (address == 0xFF04) { return SystemTimer.DIV; }
             if (address == 0xFF05) { return SystemTimer.TIMA; }
+            // 8. I/O Registers
+            // ... (your timer interceptions) ...
+
+            if (address == 0xFF68) return ppu.BCPS;
+            if (address == 0xFF69) return ppu.ReadBgPaletteData(); // BCPD
+            if (address == 0xFF6A) return ppu.OCPS;
+            if (address == 0xFF6B) return ppu.ReadObjPaletteData(); // OCPD
+            if (address == 0xFF4D) return KEY1;
+            if (address == 0xFF56) return RP;
+            if (address >= 0xFF51 && address <= 0xFF54) return 0xFF;
             if (address >= 0xFF00 && address <= 0xFF7F)
             {
                 // NOTE: When you build your Joypad or Timer classes, you will intercept
@@ -114,8 +151,8 @@ namespace GameboyTest
             // 2. Video RAM
             else if (address >= 0x8000 && address <= 0x9FFF)
             {
-                vram[address - 0x8000] = value;
-                ppu.VRAM[address - 0x8000] = value;
+
+                ppu.WriteVram(address, value);
             }
 
             // 3. External Cartridge RAM/RTC
@@ -124,8 +161,18 @@ namespace GameboyTest
 
             // 4. Working RAM
             else if (address >= 0xC000 && address <= 0xDFFF)
-                wram[address - 0xC000] = value;
-
+            {
+                if (address <= 0xCFFF)
+                {
+                    wram[address - 0xC000] = value;
+                }
+                else
+                {
+                    int bank = SVBK & 0x07;
+                    if (bank == 0) bank = 1;
+                    wram[(bank * 0x1000) + (address - 0xD000)] = value;
+                }
+            }
             // 5. Echo RAM (Writing here actually writes to WRAM!)
             else if (address >= 0xE000 && address <= 0xFDFF)
                 eram[address - 0xE000] = value;
@@ -153,12 +200,27 @@ namespace GameboyTest
             if (address == 0xFF07) {SystemTimer.TAC= value; return; }
             if (address == 0xFF05) { SystemTimer.TIMA = value; io[0x5] = value; return; }
             if (address == 0xFF06) { SystemTimer.TMA = value; return; }
+            if (address == 0xFF4D)
+            {
+                // The CPU can ONLY write to Bit 0. Bit 7 is preserved. Bits 1-6 stay 1.
+                KEY1 = (byte)((KEY1 & 0x80) | (value & 0x01) | 0x7E);
+            }
             if (address == 0xFF46)
             {
                 DmaTransfer(value);
                 
                 oam_store = value;
             }
+            if (address == 0xFF55)
+            {
+                WriteHdma5(value); // Trigger the transfer!
+            }
+            if (address == 0xFF68) ppu.BCPS = value;
+            if (address == 0xFF69) ppu.WriteBgPaletteData(value); // BCPD
+            if (address == 0xFF6A) ppu.OCPS = value;
+            if (address == 0xFF6B) ppu.WriteObjPaletteData(value);
+            if (address == 0xFF56) RP = (byte)(value & 0xC3);
+
             else if (address >= 0xFF00 && address <= 0xFF7F)
             {
                 // NOTE: Similar to reading, you will intercept specific writes here later.
@@ -259,7 +321,8 @@ namespace GameboyTest
             //InitIO(0xFF49, 0xFF); OBP1 (Object Palette 1)
             InitIO(0xFF4A, 0x00); // WY (Window Y Position)
             InitIO(0xFF4B, 0x00); // WX (Window X Position Minus 7)
-
+            InitIO(0xFF4F, 0xFE); // VBK (VRAM Bank) defaults to Bank 0
+            InitIO(0xFF70, 0xF9); // SVBK (WRAM Bank) defaults to Bank 1
             // --- MISCELLANEOUS ---
             InitIO(0xFF50, 0x01); // Bootrom Disable (Setting this to 1 hides the Nintendo logo memory)
         }
@@ -322,6 +385,89 @@ namespace GameboyTest
                 oam_switch = false;
             }
             
+        }
+        private void WriteHdma5(byte value)
+        {
+            // 1. Check if we are interacting with an ALREADY ACTIVE H-Blank DMA
+            if (hdmaActive)
+            {
+                // Writing with Bit 7 = 0 cancels the transfer. 
+                // Writing with Bit 7 = 1 while active is ignored by the hardware!
+                if ((value & 0x80) == 0)
+                {
+                    hdmaActive = false;
+                    // Leave remaining blocks in lower 7 bits, but SET Bit 7 to 1 to show it's stopped
+                    io[0x55] = (byte)((hdmaBlocksRemaining - 1) | 0x80);
+                }
+                return;
+            }
+
+            // 2. Start a New Transfer
+            // Calculate Source Address (Mask out the lower 4 bits to 0)
+            hdmaSource = (ushort)(((io[0x51] << 8) | io[0x52]) & 0xFFF0);
+
+            // Calculate Destination Address (Force into VRAM: 0x8000-0x9FF0)
+            hdmaDest = (ushort)((((io[0x53] << 8) | io[0x54]) & 0x1FF0) | 0x8000);
+
+            hdmaBlocksRemaining = (value & 0x7F) + 1;
+            bool isHBlankDma = (value & 0x80) != 0;
+
+            if (!isHBlankDma)
+            {
+                // --- GENERAL PURPOSE DMA (GDMA) ---
+                for (int i = 0; i < hdmaBlocksRemaining; i++)
+                {
+                    PerformHdmaBlock();
+                }
+                hdmaActive = false;
+                io[0x55] = 0xFF; // Complete
+            }
+            else
+            {
+                // --- H-BLANK DMA (HDMA) ---
+                hdmaActive = true;
+                io[0x55] = (byte)(hdmaBlocksRemaining - 1); // Bit 7 = 0 means active
+
+                // PAN DOCS QUIRK: If the LCD is ON and the PPU is ALREADY in Mode 0 (H-Blank), 
+                // the first 16-byte block transfers instantly right now!
+                if ((ppu.LCDC & 0x80) != 0 && (ppu.STAT & 0x03) == 0)
+                {
+                    PerformHdmaBlock();
+                }
+            }
+        }
+
+        public void PerformHdmaBlock()
+        {
+            if (!hdmaActive) return;
+
+            for (int i = 0; i < 16; i++)
+            {
+                byte data = ReadByte((ushort)(hdmaSource + i));
+                WriteByte((ushort)(hdmaDest + i), data);
+            }
+
+            hdmaSource += 16;
+            hdmaDest += 16;
+
+            // PAN DOCS QUIRK: Dest must wrap around VRAM if it overflows!
+            if (hdmaDest > 0x9FFF)
+            {
+                hdmaDest = (ushort)(0x8000 + (hdmaDest & 0x1FFF));
+            }
+
+            hdmaBlocksRemaining--;
+
+            if (hdmaBlocksRemaining == 0)
+            {
+                hdmaActive = false;
+                io[0x55] = 0xFF; // Transfer Complete
+            }
+            else
+            {
+                // Update register to show how many blocks are left (minus 1)
+                io[0x55] = (byte)(hdmaBlocksRemaining - 1);
+            }
         }
     }
 }

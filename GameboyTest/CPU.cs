@@ -1,5 +1,7 @@
 ﻿
 
+using GameboyTest.MBC;
+
 namespace GameboyTest
 {
     public class CPU
@@ -73,15 +75,17 @@ namespace GameboyTest
         public bool IME { get; set; } // Interrupt Master Enable
         public bool Halted { get; set; }
         public ulong TotalClockCycles { get; private set; }
-
-        public CPU(MemoryBus memoryBus)
+        private int speedSwitchDelay = 0;
+        public CPU(MemoryBus memoryBus, bool RunAsGBC)
         {
             this.bus = memoryBus;
-            ResetToPostBootromState();
+            ResetToPostBootromState(RunAsGBC);
+            this.GBC_ON = RunAsGBC;
         }
         // Add this to your CPU state variables
 
         // --- THE HEARTBEAT ---
+        private bool GBC_ON = false;
         private void Tick()
         {
             // Every memory access takes 1 M-Cycle, which is 4 T-Cycles
@@ -91,19 +95,41 @@ namespace GameboyTest
             {
                 bus.DmaTransfer(bus.oam_store);
             }
-            bus.ppu.Tick(4,PC, Halted,bus.ieRegister,IME,Interrupt_on_Line);
+            int ppuCycles = 4;
+            if (GBC_ON && (bus.KEY1 & 0x80) != 0)
+            {
+                // The CPU is moving twice as fast, so we only give the PPU half the cycles
+                // to keep it running at the normal 4.2 MHz speed!
+                ppuCycles = 2;
+            }
+            bus.ppu.Tick(ppuCycles,PC, Halted,bus.ieRegister,IME,Interrupt_on_Line);
             // NOTE FOR LATER: This is exactly where you will sync the rest of the hardware!
             //ppu.Step(4);
             // timer.Step(4);
         }
-        private void ResetToPostBootromState()
+        private void ResetToPostBootromState(bool isGbc)
         {
             // If you skip the Nintendo logo, these are the EXACT values 
             // the hardware has the moment the game starts at 0x0100.
-            AF = 0x01B0;
-            BC = 0x0013;
-            DE = 0x00D8;
-            HL = 0x014D;
+            if (isGbc)
+            {
+                // Game Boy Color Startup Values
+                A = 0x11; // 0x11 tells the game: "You are on a GBC!"
+                F = 0xB0; // The rest of the flags
+                B = 0x00; C = 0x00;
+                D = 0xFF; E = 0x56;
+                H = 0x00; L = 0x0D;
+            }
+            else
+            {
+                // Original Game Boy (DMG) Startup Values
+                A = 0x01; // 0x01 tells the game: "You are on a DMG!"
+                F = 0xB0;
+                B = 0x00; C = 0x13;
+                D = 0x00; E = 0xD8;
+                H = 0x01; L = 0x4D;
+            }
+
             SP = 0xFFFE;
             PC = 0x0100;
 
@@ -134,6 +160,23 @@ namespace GameboyTest
         public void Step()
         {
             // 1. HANDLE HALT STATE
+            if (speedSwitchDelay > 0)
+            {
+                // 1. Decrement the delay
+                speedSwitchDelay -= 4;
+                TotalClockCycles += 4;
+
+                // 2. The PPU keeps ticking (using 4 cycles, or 2 if in double speed)
+                int ppuCycles = (GBC_ON && (bus.KEY1 & 0x80) != 0) ? 2 : 4;
+                bus.ppu.Tick(ppuCycles, PC, Halted, bus.ieRegister, IME, Interrupt_on_Line);
+
+                // 3. CRITICAL: Notice how we DO NOT call bus.SystemTimer.Tick(4) here!
+                // This perfectly emulates the hardware quirk where DIV freezes.
+
+                if (bus.oam_switch) bus.DmaTransfer(bus.oam_store);
+
+                return; // Exit early! Do not fetch or execute opcodes.
+            }
             if (Halted)
             {
                 // Check if an interrupt is pending (IE & IF)
@@ -1487,8 +1530,23 @@ namespace GameboyTest
                     Push16(PC);
                     PC = 0x0038;
                     break;
-                case 0x10:
-                    return;
+                case 0x10: // STOP
+                    ReadNextByte(); // Consume the second byte (0x00)
+
+                    if (GBC_ON && (bus.KEY1 & 0x01) != 0)
+                    {
+                        // 1. Flip the Speed Bit
+                        bool isCurrentlyDoubleSpeed = (bus.KEY1 & 0x80) != 0;
+                        bus.KEY1 = (byte)(isCurrentlyDoubleSpeed ? 0x7E : 0xFE);
+
+                        // 2. Trigger the hardware coma! (8200 T-Cycles = 2050 M-Cycles)
+                        speedSwitchDelay = 8200;
+                    }
+                    else
+                    {
+                        Halted = true;
+                    }
+                    break;
 
                 default:
                     throw new NotImplementedException($"Opcode 0x{opcode:X2} at PC 0x{PC - 1:X4} is not implemented!");

@@ -12,8 +12,7 @@ namespace GameboyTest
         public byte LY { get => io[0x44]; set => io[0x44] = value; }   // 0xFF44
         public byte LYC { get => io[0x45]; set => io[0x45] = value; }  // 0xFF45
                                                                        // --- VRAM & OAM (Super Fast Direct Access) ---
-        public byte[] VRAM { get; private set; } = new byte[8192]; // 0x8000 - 0x9FFF
-        public byte[] OAM { get; private set; } = new byte[160];   // 0xFE00 - 0xFE9F
+
 
         // --- HARDWARE REGISTERS ---
 
@@ -40,7 +39,19 @@ namespace GameboyTest
 
         // --- INTERNAL STATE ---
         private int scanlineCounter = 456;
+        // --- GBC PALETTE RAM ---
+        // 64 bytes each (8 palettes * 4 colors * 2 bytes per color)
+        public byte[] CgbBgPaletteRam { get; private set; } = new byte[64];
+        public byte[] CgbObjPaletteRam { get; private set; } = new byte[64];
 
+        // Tells the PPU if it should render in full Color mode or classic DMG mode
+        public bool IsGbc = false;
+
+        // NEW: We need to remember if the background asked for priority on this specific pixel
+        private bool[] scanlineBgPriority = new bool[160];
+        // Palette Index Registers
+        public byte BCPS { get => io[0x68]; set => io[0x68] = value; } // 0xFF68
+        public byte OCPS { get => io[0x6A]; set => io[0x6A] = value; } // 0xFF6A
         // This replaces your 'triggered' array for accurate STAT blocking!
         private System.IO.StreamWriter debugLog;
         private bool tick = false;
@@ -96,25 +107,74 @@ namespace GameboyTest
             get => io[0x48]; // 0xFF4B
             set => io[0x48] = value;
         }   // 0xFF48 (Sprite Palette 0)
+        public byte[] VRAM { get; private set; } = new byte[0x4000];
+        public byte[] OAM { get; private set; } = new byte[160];
 
+        // Register 0xFF4F (VBK) - VRAM Bank. Bits 1-7 are always 1.
+        public byte VBK
+        {
+            get => (byte)(io[0x4F] | 0xFE);
+            set => io[0x4F] = (byte)(value | 0xFE);
+        }
         public byte OBP1 { get => io[0x49]; set => io[0x49] = value; } // 0xFF49 (Sprite Palette 1)
         private Action requestFrameRender;
-        public PPU(Action lcdInterrupt, Action vBlankInterrupt, Action renderCallback, byte[] io, byte[] vram, byte[] oam)
+        private Action performHdmaCallback;
+        public PPU(Action lcdInterrupt, Action vBlankInterrupt, Action renderCallback, byte[] io, Action hdmaCallback)
         {
             this.requestLcdInterrupt = lcdInterrupt;
             this.requestVBlankInterrupt = vBlankInterrupt;
             this.requestFrameRender = renderCallback;
             this.io = io;
-            this.vram = vram;
-            this.oam = oam;
+            this.performHdmaCallback = hdmaCallback;
+
 
         }
         // Helper to check if the LCD is currently turned on (Bit 7 of LCDC)
+
+        public byte ReadBgPaletteData() => CgbBgPaletteRam[BCPS & 0x3F];
+
+        public void WriteBgPaletteData(byte value)
+        {
+            CgbBgPaletteRam[BCPS & 0x3F] = value;
+
+            // Auto-Increment Flag (Bit 7)
+            if ((BCPS & 0x80) != 0)
+            {
+                byte nextIndex = (byte)((BCPS & 0x3F) + 1);
+                BCPS = (byte)(0x80 | (nextIndex & 0x3F));
+            }
+        }
+
+        public byte ReadObjPaletteData() => CgbObjPaletteRam[OCPS & 0x3F];
+
+        public void WriteObjPaletteData(byte value)
+        {
+            CgbObjPaletteRam[OCPS & 0x3F] = value;
+
+            // Auto-Increment Flag (Bit 7)
+            if ((OCPS & 0x80) != 0)
+            {
+                byte nextIndex = (byte)((OCPS & 0x3F) + 1);
+                OCPS = (byte)(0x80 | (nextIndex & 0x3F));
+            }
+        }
         private bool IsLcdEnabled()
         {
             return (LCDC & 0x80) != 0;
-        } 
+        }
+        public byte ReadVram(ushort address)
+        {
+            int offset = address - 0x8000;
+            int bank = VBK & 0x01; // Only look at Bit 0
+            return VRAM[(bank * 0x2000) + offset];
+        }
 
+        public void WriteVram(ushort address, byte value)
+        {
+            int offset = address - 0x8000;
+            int bank = VBK & 0x01;
+            VRAM[(bank * 0x2000) + offset] = value;
+        }
         // Called by the CPU every time it ticks!
         public void Tick(int cycles, ushort PC, bool halted, byte ie,bool IME,bool Interrupt_on_Line)
         {
@@ -199,8 +259,11 @@ namespace GameboyTest
 
 
 
-            
 
+            if (new_mode == 0 && current_mode != 0)
+            {
+                if (IsGbc) performHdmaCallback(); // Copy 16 bytes of data!
+            }
 
             ly_match = (LY == LYC);
             if (IsLcdEnabled())
@@ -341,8 +404,16 @@ namespace GameboyTest
         private void DrawScanline()
         {
             // Bit 0: BG Enable, Bit 1: Sprite Enable
-            if ((LCDC & 0x01) != 0) RenderTiles();
-            if ((LCDC & 0x02) != 0) RenderSprites();
+            if (IsGbc || (LCDC & 0x01) != 0)
+            {
+                RenderTiles();
+            }
+
+            // Bit 1: Sprite Enable
+            if ((LCDC & 0x02) != 0)
+            {
+                RenderSprites();
+            }
         }
 
         private void RenderTiles()
@@ -394,38 +465,66 @@ namespace GameboyTest
                 int tileCol = xPos / 8;
                 int tileRow = yPos / 8;
 
-                // Fetch the Tile ID from VRAM
+                // 1. Fetch the Tile ID from VRAM Bank 0
                 ushort tileAddress = (ushort)(tileMapBase + (tileRow * 32) + tileCol);
                 int tileNum = VRAM[tileAddress];
 
-                // Adjust for signed tile numbers (-128 to 127)
                 if (tileDataSigned)
                 {
                     tileNum = (sbyte)tileNum;
-
                     tileNum += 128;
                 }
 
-                // Find the exact line in the tile (16 bytes per tile, 2 bytes per row)
-                int lineInTile = (yPos & 7) * 2;
-                ushort dataAddress = (ushort)(tileDataAddress + (tileNum * 16) + lineInTile);
+                // 2. --- GBC ATTRIBUTE FETCHING ---
+                int vramBankOffset = 0;
+                int paletteIndex = 0;
+                bool xFlip = false;
+                bool yFlip = false;
+                bool bgPriority = false;
 
-                // Read the two bytes representing the 8 pixels
+                if (IsGbc)
+                {
+                    // The attributes live at the exact same address, just shifted into Bank 1 (+0x2000)
+                    byte attributes = VRAM[tileAddress + 0x2000];
+                    paletteIndex = attributes & 0x07;                            // Bits 0-2: Palette Number
+                    vramBankOffset = ((attributes & 0x08) != 0) ? 0x2000 : 0x0000; // Bit 3: VRAM Bank
+                    xFlip = (attributes & 0x20) != 0;                            // Bit 5: X Flip
+                    yFlip = (attributes & 0x40) != 0;                            // Bit 6: Y Flip
+                    bgPriority = (attributes & 0x80) != 0;                       // Bit 7: BG-to-OAM Priority
+                }
+
+                // 3. Handle Y-Flip
+                int lineInTile = yPos & 7;
+                if (yFlip) lineInTile = 7 - lineInTile; // Read from the bottom up!
+
+                ushort dataAddress = (ushort)(tileDataAddress + (tileNum * 16) + (lineInTile * 2) + vramBankOffset);
                 byte data1 = VRAM[dataAddress];
                 byte data2 = VRAM[dataAddress + 1];
 
-                // Extract the color bit
-                int colorBit = 7 - (xPos & 7);
+                // 4. Handle X-Flip
+                int tilePixelX = xPos & 7;
+                if (xFlip) tilePixelX = 7 - tilePixelX; // Read from right to left!
+                int colorBit = 7 - tilePixelX;
+
+                // 5. Extract the 2-bit color number
                 int colorNum = (((data2 >> colorBit) & 1) << 1) | ((data1 >> colorBit) & 1);
 
-                // Store raw color for sprite priority checks later
+                // Store raw color and priority for the sprite renderer to check later
                 scanlineRawColors[pixel] = colorNum;
+                scanlineBgPriority[pixel] = bgPriority;
 
-                // Resolve through the Background Palette (BGP)
-                int paletteVal = (BGP >> (colorNum * 2)) & 3;
-
-                // Push directly to the SkiaSharp FrameBuffer!
-                FrameBuffer[LY * 160 + pixel] = Colors[paletteVal];
+                // 6. --- RENDER THE FINAL PIXEL ---
+                if (IsGbc)
+                {
+                    // Use the new 15-bit color hardware!
+                    FrameBuffer[LY * 160 + pixel] = GetGbcColor(paletteIndex, colorNum, false);
+                }
+                else
+                {
+                    // Fall back to classic monochrome
+                    int paletteVal = (BGP >> (colorNum * 2)) & 3;
+                    FrameBuffer[LY * 160 + pixel] = Colors[paletteVal];
+                }
             }
 
             // If the window was drawn on this scanline, increment its hidden counter
@@ -436,7 +535,7 @@ namespace GameboyTest
         {
             bool use8x16 = (LCDC & 0x04) != 0; // Bit 2
             int spriteHeight = use8x16 ? 16 : 8;
-
+            bool masterPriority = (LCDC & 0x01) != 0;
             // Step 1: Collect up to 10 sprites that intersect this scanline
             var sprites = new List<SpriteData>(10);
 
@@ -465,12 +564,21 @@ namespace GameboyTest
             // Game Boy priority: Lowest X coordinate draws ON TOP. If X is tied, Lowest OAM index draws ON TOP.
             // By sorting DESCENDING, we draw the lowest priority sprites first, letting the higher priority 
             // sprites safely overwrite them at the end of the loop (just like the Python reverse() logic).
+            // Step 2: Sort the sprites by Priority.
             sprites.Sort((a, b) => {
-                int xCmp = b.X.CompareTo(a.X);
-                if (xCmp != 0) return xCmp;
-                return b.OamIndex.CompareTo(a.OamIndex);
+                if (IsGbc)
+                {
+                    // GBC strictly prioritizes based on OAM index (Lower index = drawn later = ON TOP)
+                    return b.OamIndex.CompareTo(a.OamIndex);
+                }
+                else
+                {
+                    // DMG prioritizes lowest X coordinate first. If tied, it falls back to OAM index.
+                    int xCmp = b.X.CompareTo(a.X);
+                    if (xCmp != 0) return xCmp;
+                    return b.OamIndex.CompareTo(a.OamIndex);
+                }
             });
-
             // Step 3: Draw the sorted sprites
             foreach (var sprite in sprites)
             {
@@ -481,26 +589,27 @@ namespace GameboyTest
 
                 bool yFlip = (attributes & 0x40) != 0;
                 bool xFlip = (attributes & 0x20) != 0;
-                bool usePalette1 = (attributes & 0x10) != 0;
                 bool objBehindBg = (attributes & 0x80) != 0; // Priority
 
-                byte palette = usePalette1 ? OBP1 : OBP0;
+                // --- GBC ATTRIBUTE FETCHING ---
+                int paletteIndex = 0;
+                int vramBankOffset = 0;
+                byte dmgPalette = ((attributes & 0x10) != 0) ? OBP1 : OBP0;
+
+                if (IsGbc)
+                {
+                    paletteIndex = attributes & 0x07;                              // Bits 0-2: Palette Number
+                    vramBankOffset = ((attributes & 0x08) != 0) ? 0x2000 : 0x0000; // Bit 3: VRAM Bank
+                }
 
                 // Determine which line of the sprite we are drawing
                 int line = LY - yPos;
-                if (yFlip)
-                {
-                    line = (spriteHeight - 1) - line;
-                }
+                if (yFlip) line = (spriteHeight - 1) - line;
 
-                if (use8x16)
-                {
-                    // 8x16 sprites ignore the bottom bit of the tile index
-                    tileLocation &= 0xFE;
-                }
+                if (use8x16) tileLocation &= 0xFE;
 
-                // Get memory address
-                ushort dataAddress = (ushort)((tileLocation * 16) + (line * 2));
+                // Grab the data, ensuring we read from the correct VRAM bank!
+                ushort dataAddress = (ushort)((tileLocation * 16) + (line * 2) + vramBankOffset);
                 byte data1 = VRAM[dataAddress];
                 byte data2 = VRAM[dataAddress + 1];
 
@@ -514,121 +623,223 @@ namespace GameboyTest
                     if (colorNum == 0) continue;
 
                     int pixelX = xPos + tilePixel;
-
-                    // Skip if off-screen
                     if (pixelX < 0 || pixelX > 159) continue;
 
-                    // Sprite Priority Logic:
-                    // If objBehindBg is true, the sprite ONLY draws if the background color was 0 (transparent).
-                    if (objBehindBg && scanlineRawColors[pixelX] != 0) continue;
+                    // --- GBC SPRITE PRIORITY LOGIC ---
+                    // The GBC has slightly more complex priority. If the Background specifically 
+                    // asked for priority (Bit 7 of BG Attributes), the sprite is ALWAYS hidden 
+                    // behind it, unless the background pixel is transparent (Color 0).
+                    // If we are in CGB mode and Master Priority is 0, sprites ALWAYS draw on top.
+                    // We only respect priority flags if we are in DMG mode OR Master Priority is 1.
+                    if (!IsGbc || masterPriority)
+                    {
+                        // The Background specifically asked for priority (CGB only)
+                        if (IsGbc && scanlineBgPriority[pixelX] && scanlineRawColors[pixelX] != 0) continue;
 
-                    // Map through palette and draw!
-                    int paletteVal = (palette >> (colorNum * 2)) & 3;
-                    FrameBuffer[LY * 160 + pixelX] = Colors[paletteVal];
+                        // The Sprite specifically asked to go behind the background
+                        if (objBehindBg && scanlineRawColors[pixelX] != 0) continue;
+                    }
+                    // --- RENDER THE FINAL PIXEL ---
+                    if (IsGbc)
+                    {
+                        FrameBuffer[LY * 160 + pixelX] = GetGbcColor(paletteIndex, colorNum, true);
+                    }
+                    else
+                    {
+                        int paletteVal = (dmgPalette >> (colorNum * 2)) & 3;
+                        FrameBuffer[LY * 160 + pixelX] = Colors[paletteVal];
+                    }
                 }
             }
 
         }
         // Add paletteChoice parameter: 0 = BGP, 1 = OBP0, 2 = OBP1
-        public uint[] GetVramTexture(int paletteChoice = 0)
+        // Expand to 256x256 buffer!
+        public uint[] GetVramTexture(int paletteChoice = 0, int gbcPaletteIndex = 0)
         {
-            // 128 pixels wide x 256 pixels high
-            uint[] vramBuffer = new uint[128 * 256];
+            // 256 pixels wide x 256 pixels high (Fits all 1024 tiles across both banks)
+            uint[] vramBuffer = new uint[256 * 256];
 
-            // Determine which palette register to use based on the dropdown
             byte targetPalette = BGP;
-            if (paletteChoice == 1) targetPalette = OBP0;
-            if (paletteChoice == 2) targetPalette = OBP1;
+            bool isSpritePalette = false;
+            if (paletteChoice == 1) { targetPalette = OBP0; isSpritePalette = true; }
+            if (paletteChoice == 2) { targetPalette = OBP1; isSpritePalette = true; }
 
-            // Loop through all 512 tiles in VRAM
-            for (int tileIndex = 0; tileIndex < 512; tileIndex++)
+            // Loop through 1024 tiles. Tiles 0-511 are Bank 0, Tiles 512-1023 are Bank 1.
+            for (int tileIndex = 0; tileIndex < 1024; tileIndex++)
             {
-                // Calculate where this tile sits on our 16x32 grid
-                int gridX = tileIndex % 16;
-                int gridY = tileIndex / 16;
+                // Calculate which VRAM bank to read from
+                int bankOffset = (tileIndex >= 512) ? 0x2000 : 0x0000;
+                int localTileIndex = tileIndex % 512;
 
-                // Calculate the starting pixel coordinates for this tile
+                int gridX = tileIndex % 32;
+                int gridY = tileIndex / 32;
+
                 int pixelStartX = gridX * 8;
                 int pixelStartY = gridY * 8;
 
-                // Loop through the 8 rows of the tile
                 for (int y = 0; y < 8; y++)
                 {
-                    // Each row takes 2 bytes. Calculate the address in VRAM.
-                    int dataAddress = (tileIndex * 16) + (y * 2);
+                    int dataAddress = (localTileIndex * 16) + (y * 2) + bankOffset;
                     byte data1 = VRAM[dataAddress];
                     byte data2 = VRAM[dataAddress + 1];
 
-                    // Loop through the 8 pixels of the row
                     for (int x = 0; x < 8; x++)
                     {
-                        // Extract the 2-bit color index for this pixel
                         int colorBit = 7 - x;
                         int colorNum = (((data2 >> colorBit) & 1) << 1) | ((data1 >> colorBit) & 1);
 
-                        // USE THE NEW TARGET PALETTE HERE!
-                        int paletteVal = (targetPalette >> (colorNum * 2)) & 3;
+                        uint finalColor;
+                        if (IsGbc)
+                        {
+                            // Use the 15-bit hardware colors
+                            finalColor = GetGbcColor(gbcPaletteIndex, colorNum, isSpritePalette);
+                        }
+                        else
+                        {
+                            // Fall back to DMG green palettes
+                            int paletteVal = (targetPalette >> (colorNum * 2)) & 3;
+                            finalColor = Colors[paletteVal];
+                        }
 
-                        // Calculate the final 1D array index for our 128x256 buffer
                         int drawX = pixelStartX + x;
                         int drawY = pixelStartY + y;
-                        int bufferIndex = (drawY * 128) + drawX;
-
-                        // Set the color using your existing SkiaSharp Colors array
-                        vramBuffer[bufferIndex] = Colors[paletteVal];
+                        vramBuffer[(drawY * 256) + drawX] = finalColor;
                     }
                 }
             }
-
             return vramBuffer;
         }
-        public uint[] GetBackgroundMapTexture(bool useMap2 = false)
+        public uint[] GetBackgroundMapTexture(bool useMap2 = false, bool showSprites = false)
         {
-            // The BG Map is 32x32 tiles (256x256 pixels)
             uint[] bgBuffer = new uint[256 * 256];
-
-            // Determine which map to read based on the parameter
-            // Map 1 starts at VRAM offset 0x1800, Map 2 at 0x1C00
             ushort mapBase = (ushort)(useMap2 ? 0x1C00 : 0x1800);
-
-            // Check LCDC Bit 4 to see if we are using signed or unsigned tile data
             bool tileDataSigned = (LCDC & 0x10) == 0;
             ushort tileDataBase = (ushort)(tileDataSigned ? 0x0800 : 0x0000);
 
-            // Loop through the 32x32 tile grid
+            // --- 1. RENDER BACKGROUND MAP ---
             for (int tileY = 0; tileY < 32; tileY++)
             {
                 for (int tileX = 0; tileX < 32; tileX++)
                 {
-                    // Fetch the Tile ID from the background map
                     int mapIndex = mapBase + (tileY * 32) + tileX;
                     int tileNum = VRAM[mapIndex];
 
-                    // Adjust the Tile ID if the addressing mode is signed
                     if (tileDataSigned)
                     {
                         tileNum = (sbyte)tileNum;
                         tileNum += 128;
                     }
 
-                    // Draw this specific 8x8 tile into the larger buffer
+                    // GBC Attributes
+                    int vramBankOffset = 0;
+                    int paletteIndex = 0;
+                    bool xFlip = false;
+                    bool yFlip = false;
+
+                    if (IsGbc)
+                    {
+                        byte attributes = VRAM[mapIndex + 0x2000]; // Attributes are in Bank 1
+                        paletteIndex = attributes & 0x07;
+                        vramBankOffset = ((attributes & 0x08) != 0) ? 0x2000 : 0x0000;
+                        xFlip = (attributes & 0x20) != 0;
+                        yFlip = (attributes & 0x40) != 0;
+                    }
+
                     for (int y = 0; y < 8; y++)
                     {
-                        int dataAddress = tileDataBase + (tileNum * 16) + (y * 2);
+                        int lineInTile = yFlip ? 7 - y : y;
+                        int dataAddress = tileDataBase + (tileNum * 16) + (lineInTile * 2) + vramBankOffset;
                         byte data1 = VRAM[dataAddress];
                         byte data2 = VRAM[dataAddress + 1];
 
                         for (int x = 0; x < 8; x++)
                         {
-                            int colorBit = 7 - x;
+                            int tilePixelX = xFlip ? 7 - x : x;
+                            int colorBit = 7 - tilePixelX;
                             int colorNum = (((data2 >> colorBit) & 1) << 1) | ((data1 >> colorBit) & 1);
-                            int paletteVal = (BGP >> (colorNum * 2)) & 3;
 
-                            // Calculate the exact pixel coordinate on the 256x256 map
+                            uint finalColor;
+                            if (IsGbc)
+                            {
+                                finalColor = GetGbcColor(paletteIndex, colorNum, false);
+                            }
+                            else
+                            {
+                                int paletteVal = (BGP >> (colorNum * 2)) & 3;
+                                finalColor = Colors[paletteVal];
+                            }
+
                             int pixelX = (tileX * 8) + x;
                             int pixelY = (tileY * 8) + y;
+                            bgBuffer[(pixelY * 256) + pixelX] = finalColor;
+                        }
+                    }
+                }
+            }
 
-                            bgBuffer[(pixelY * 256) + pixelX] = Colors[paletteVal];
+            // --- 2. RENDER OVERLAY SPRITES ---
+            if (showSprites)
+            {
+                bool use8x16 = (LCDC & 0x04) != 0;
+                int spriteHeight = use8x16 ? 16 : 8;
+
+                for (int i = 39; i >= 0; i--) // Reverse order for basic visual priority
+                {
+                    int oamIndex = i * 4;
+                    int screenY = OAM[oamIndex] - 16;
+                    int screenX = OAM[oamIndex + 1] - 8;
+                    int tileLocation = OAM[oamIndex + 2];
+                    int attributes = OAM[oamIndex + 3];
+
+                    // Project screen coordinates to absolute Map coordinates using scroll
+                    int mapY = (screenY + SCY) & 255;
+                    int mapX = (screenX + SCX) & 255;
+
+                    bool yFlip = (attributes & 0x40) != 0;
+                    bool xFlip = (attributes & 0x20) != 0;
+
+                    int paletteIndex = 0;
+                    int vramBankOffset = 0;
+                    byte dmgPalette = ((attributes & 0x10) != 0) ? OBP1 : OBP0;
+
+                    if (IsGbc)
+                    {
+                        paletteIndex = attributes & 0x07;
+                        vramBankOffset = ((attributes & 0x08) != 0) ? 0x2000 : 0x0000;
+                    }
+
+                    if (use8x16) tileLocation &= 0xFE;
+
+                    for (int y = 0; y < spriteHeight; y++)
+                    {
+                        int line = yFlip ? (spriteHeight - 1 - y) : y;
+                        ushort dataAddress = (ushort)((tileLocation * 16) + (line * 2) + vramBankOffset);
+                        byte data1 = VRAM[dataAddress];
+                        byte data2 = VRAM[dataAddress + 1];
+
+                        for (int x = 0; x < 8; x++)
+                        {
+                            int colorBit = xFlip ? x : (7 - x);
+                            int colorNum = (((data2 >> colorBit) & 1) << 1) | ((data1 >> colorBit) & 1);
+
+                            if (colorNum == 0) continue; // Skip transparent pixels
+
+                            uint finalColor;
+                            if (IsGbc)
+                            {
+                                finalColor = GetGbcColor(paletteIndex, colorNum, true);
+                            }
+                            else
+                            {
+                                int paletteVal = (dmgPalette >> (colorNum * 2)) & 3;
+                                finalColor = Colors[paletteVal];
+                            }
+
+                            // Wrap rendering around the edges of the 256x256 map
+                            int drawY = (mapY + y) & 255;
+                            int drawX = (mapX + x) & 255;
+                            bgBuffer[(drawY * 256) + drawX] = finalColor;
                         }
                     }
                 }
@@ -638,8 +849,6 @@ namespace GameboyTest
         }
         public uint[] GetOamTexture()
         {
-            // A grid of 8 columns by 5 rows. 
-            // We allocate 8x16 pixels per slot to safely support 8x16 sprite mode.
             // Width: 8 cols * 8 pixels = 64
             // Height: 5 rows * 16 pixels = 80
             uint[] oamBuffer = new uint[64 * 80];
@@ -647,7 +856,6 @@ namespace GameboyTest
             bool use8x16 = (LCDC & 0x04) != 0;
             int spriteHeight = use8x16 ? 16 : 8;
 
-            // Loop through all 40 sprites in OAM
             for (int i = 0; i < 40; i++)
             {
                 int oamIndex = i * 4;
@@ -656,18 +864,26 @@ namespace GameboyTest
 
                 bool xFlip = (attributes & 0x20) != 0;
                 bool yFlip = (attributes & 0x40) != 0;
-                byte palette = ((attributes & 0x10) != 0) ? OBP1 : OBP0;
+                byte dmgPalette = ((attributes & 0x10) != 0) ? OBP1 : OBP0;
+
+                int paletteIndex = 0;
+                int vramBankOffset = 0;
+
+                if (IsGbc)
+                {
+                    paletteIndex = attributes & 0x07;
+                    vramBankOffset = ((attributes & 0x08) != 0) ? 0x2000 : 0x0000;
+                }
 
                 if (use8x16) tileLocation &= 0xFE;
 
-                // Calculate where this sprite sits in our 8x5 display grid
                 int gridX = (i % 8) * 8;
                 int gridY = (i / 8) * 16;
 
                 for (int y = 0; y < spriteHeight; y++)
                 {
                     int line = yFlip ? (spriteHeight - 1 - y) : y;
-                    ushort dataAddress = (ushort)((tileLocation * 16) + (line * 2));
+                    ushort dataAddress = (ushort)((tileLocation * 16) + (line * 2) + vramBankOffset);
                     byte data1 = VRAM[dataAddress];
                     byte data2 = VRAM[dataAddress + 1];
 
@@ -676,19 +892,54 @@ namespace GameboyTest
                         int colorBit = xFlip ? x : (7 - x);
                         int colorNum = (((data2 >> colorBit) & 1) << 1) | ((data1 >> colorBit) & 1);
 
-                        // For the viewer, we can leave Color 0 as black/transparent
                         if (colorNum == 0) continue;
 
-                        int paletteVal = (palette >> (colorNum * 2)) & 3;
+                        uint finalColor;
+                        if (IsGbc)
+                        {
+                            finalColor = GetGbcColor(paletteIndex, colorNum, true);
+                        }
+                        else
+                        {
+                            int paletteVal = (dmgPalette >> (colorNum * 2)) & 3;
+                            finalColor = Colors[paletteVal];
+                        }
 
                         int drawX = gridX + x;
                         int drawY = gridY + y;
-
-                        oamBuffer[(drawY * 64) + drawX] = Colors[paletteVal];
+                        oamBuffer[(drawY * 64) + drawX] = finalColor;
                     }
                 }
             }
             return oamBuffer;
+        }
+
+        //GBC PALETTE READING HELPER - Given a palette index (0-7), color index (0-3), and whether it's a sprite or background palette, return the final 32-bit ARGB color for SkiaSharp!
+        public uint GetGbcColor(int paletteIndex, int colorIndex, bool isSprite)
+        {
+            byte[] ram = isSprite ? CgbObjPaletteRam : CgbBgPaletteRam;
+
+            // Each color takes 2 bytes. 4 colors per palette.
+            int address = (paletteIndex * 8) + (colorIndex * 2);
+
+            byte low = ram[address];
+            byte high = ram[address + 1];
+            ushort color15 = (ushort)((high << 8) | low);
+
+            // Extract the 5-bit RGB channels
+            int r = (color15 & 0x001F);
+            int g = (color15 & 0x03E0) >> 5;
+            int b = (color15 & 0x7C00) >> 10;
+
+            // Scale the 5-bit channel (0-31) up to an 8-bit channel (0-255).
+            // Shifting left by 3 gets us 90% of the way there, and ORing it with 
+            // a shift right by 2 accurately fills in the lowest bits so true white is bright!
+            r = (r << 3) | (r >> 2);
+            g = (g << 3) | (g >> 2);
+            b = (b << 3) | (b >> 2);
+
+            // Return as AARRGGBB for SkiaSharp (Fully Opaque)
+            return (uint)(0xFF000000 | (r << 16) | (g << 8) | b);
         }
     }
 }
