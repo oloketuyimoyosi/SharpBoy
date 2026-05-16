@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+﻿using GameboyTest.NewFolder;
+using System.Diagnostics;
 using System.Net;
 using System.Timers;
 
@@ -129,6 +130,7 @@ namespace GameboyTest
             this.performHdmaCallback = hdmaCallback;
 
 
+
         }
         // Helper to check if the LCD is currently turned on (Bit 7 of LCDC)
 
@@ -211,6 +213,7 @@ namespace GameboyTest
                     {
                         if (IsLcdEnabled()) requestVBlankInterrupt();
                         requestFrameRender();
+
                     }
                     else if (LY == 153)
                     {

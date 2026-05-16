@@ -1,5 +1,6 @@
 using GameboyTest.Form_Design;
 using GameboyTest.MBC;
+using GameboyTest.NewFolder;
 using SkiaSharp;
 using SkiaSharp.Views.Desktop;
 using System.Diagnostics;
@@ -167,7 +168,8 @@ namespace GameboyTest
                             }
                             // Pass it to your CPU (you'll need to update your CPU constructor to accept/pass this down)
                             cpu = new CPU(bus, runAsGbc);
-
+                            APU testApu = new APU();
+                            
                             // START THE LOGGER HERE!
                             string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cpu_log.txt");
 

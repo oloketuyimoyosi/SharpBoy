@@ -91,21 +91,23 @@ namespace GameboyTest
             // Every memory access takes 1 M-Cycle, which is 4 T-Cycles
             TotalClockCycles += 4;
             bus.SystemTimer.Tick(4);
+
             if (bus.oam_switch)
             {
                 bus.DmaTransfer(bus.oam_store);
             }
+
             int ppuCycles = 4;
             if (GBC_ON && (bus.KEY1 & 0x80) != 0)
             {
-                // The CPU is moving twice as fast, so we only give the PPU half the cycles
-                // to keep it running at the normal 4.2 MHz speed!
                 ppuCycles = 2;
             }
-            bus.ppu.Tick(ppuCycles,PC, Halted,bus.ieRegister,IME,Interrupt_on_Line);
-            // NOTE FOR LATER: This is exactly where you will sync the rest of the hardware!
-            //ppu.Step(4);
-            // timer.Step(4);
+
+            bus.ppu.Tick(ppuCycles, PC, Halted, bus.ieRegister, IME, Interrupt_on_Line);
+
+            // THE FIX: The APU must tick constantly alongside the PPU!
+            bus.apu.Tick(4);
+            bus.apu.ProcessAudio();
         }
         private void ResetToPostBootromState(bool isGbc)
         {
@@ -174,6 +176,7 @@ namespace GameboyTest
                 // This perfectly emulates the hardware quirk where DIV freezes.
 
                 if (bus.oam_switch) bus.DmaTransfer(bus.oam_store);
+
 
                 return; // Exit early! Do not fetch or execute opcodes.
             }
