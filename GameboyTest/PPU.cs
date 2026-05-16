@@ -76,6 +76,7 @@ namespace GameboyTest
             public int Attributes;
             public int OamIndex;
         }
+        private bool isLine153 = false;
         // A callback to tell your main SkiaSharp window: "The frame is ready, draw it!"
         public byte SCY
         {
@@ -176,60 +177,64 @@ namespace GameboyTest
             VRAM[(bank * 0x2000) + offset] = value;
         }
         // Called by the CPU every time it ticks!
-        public void Tick(int cycles, ushort PC, bool halted, byte ie,bool IME,bool Interrupt_on_Line)
+        public void Tick(int cycles, ushort PC, bool halted, byte ie, bool IME, bool Interrupt_on_Line)
         {
-
             if (IsLcdEnabled())
             {
-
                 scanlineCounter -= cycles;
-            }
 
+                // --- THE LINE 153 QUIRK ---
+                // If we are on line 153, and 4 T-cycles have passed, LY instantly drops to 0!
+                if (isLine153 && scanlineCounter <= (SCANLINE_CYCLES - 4))
+                {
+                    LY = 0;
+                }
+            }
 
             // If we finished a full horizontal line...
             if ((scanlineCounter <= 0))
             {
-
-
-                scanlineCounter = SCANLINE_CYCLES;
-                LY++;
+                scanlineCounter += SCANLINE_CYCLES; // Use += to perfectly preserve leftover cycles
                 tick = false;
 
-
-                if (LY == 144)
+                if (isLine153)
                 {
-                    if (IsLcdEnabled())
+                    // We just finished the remaining 452 cycles of line 153. Officially move to line 0.
+                    isLine153 = false;
+                    LY = 0;
+                }
+                else
+                {
+                    LY++;
+
+                    if (LY == 144)
                     {
-                        requestVBlankInterrupt();
+                        if (IsLcdEnabled()) requestVBlankInterrupt();
+                        requestFrameRender();
+                    }
+                    else if (LY == 153)
+                    {
+                        isLine153 = true; // Trigger the quirk for the next loop!
                     }
 
-                    requestFrameRender();
+                    if (LY > 144)
+                    {
+                        windowLineCounter = 0;
+                    }
                 }
-                else if (LY > 153)
-                {
-                    
-                    LY = 0; // Reset back to the top of the screen
-                }
-                else if (LY > 144)
-                {
-                    windowLineCounter = 0;
-                }
-
             }
 
-            UpdateStatus(PC,halted,ie,IME,Interrupt_on_Line);
+            UpdateStatus(PC, halted, ie, IME, Interrupt_on_Line);
+
             if (!tick)
             {
-                if (LY < 144 && (calculatemode(scanlineCounter, LY, IsLcdEnabled(), PC) == 0)) // THIS HELP FIX ALOT OF PPU PROBLEMS! Mode 0 only starts AFTER the full 456 cycles, so we wait until the next tick to draw the scanline. This prevents all sorts of weird edge cases where games try to change PPU state mid-scanline. 
-                    //ALSO HELP FIX POCKET.GB WERID GRAPHICS NONSENSE(COOL STUFF ACTUALLY).
+                // Safety check: Don't draw if we are executing the fake LY=0 quirk
+                if (!isLine153 && LY < 144 && (calculatemode(scanlineCounter, LY, IsLcdEnabled(), PC) == 0))
                 {
                     DrawScanline();
                     tick = true;
                 }
             }
-
-            // Update the STAT register based on our current cycle and LY
-
         }
 
         // This is the direct C# translation of your SET_LCD_STATUS python method
@@ -350,41 +355,29 @@ namespace GameboyTest
 
         }
 
-        private int calculatemode(int scanline_cycles, int current_line, bool lcd_enabled,ushort PC)
+        private int calculatemode(int scanline_cycles, int current_line, bool lcd_enabled, ushort PC)
         {
-            
             if (lcd_enabled)
             {
-
-
-                        if (current_line >= 144)
-                        {
-
-                            return 0x1;
-                        }
-                        else if (scanline_cycles >= (SCANLINE_CYCLES - MODE_2_BOUND))
-                        {
-
-                            return 0x2;
-                        }
-                        else if (scanline_cycles >= (SCANLINE_CYCLES - MODE_3_BOUND))
-                        {
-
-                            return 0x3;
-                        }
-                        else
-                        {
-                            //
-                            return 0x0;
-
-
-
-                        }
-
+                // THE FIX: Even though current_line (LY) is 0, force Mode 1 if the quirk is active!
+                if (current_line >= 144 || isLine153)
+                {
+                    return 0x1;
                 }
-
+                else if (scanline_cycles >= (SCANLINE_CYCLES - MODE_2_BOUND))
+                {
+                    return 0x2;
+                }
+                else if (scanline_cycles >= (SCANLINE_CYCLES - MODE_3_BOUND))
+                {
+                    return 0x3;
+                }
+                else
+                {
+                    return 0x0;
+                }
+            }
             return 0x0;
-
         }
         private int updateStatus(int status, int mode)
         {

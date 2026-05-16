@@ -20,7 +20,7 @@ namespace GameboyTest
         // Internal Game Boy Memory Arrays
         public byte[] vram = new byte[0x2000]; // 8KB Video RAM (0x8000 - 0x9FFF)
         private byte[] wram = new byte[0x8000]; // Expanded to 32KB (8 banks of 4096 bytes) for GBC!
-        private byte[] eram = new byte[0x1E00];
+
         // --- NEW HARDWARE ARRAYS ---
         public byte[] oam = new byte[0xA0];    // 160 bytes Sprite RAM (0xFE00 - 0xFE9F)
         public byte[] io = new byte[0x80];     // 128 bytes I/O Registers (0xFF00 - 0xFF7F)
@@ -40,6 +40,7 @@ namespace GameboyTest
         private int hdmaBlocksRemaining = 0;
         private ushort hdmaSource = 0;
         private ushort hdmaDest = 0;
+        private bool hdmaRegistersDirty = true; // Tracks if the game change
         // --- GBC SPEED SWITCH REGISTER ---
         // 0xFF4D (KEY1). Default is 0x7E (Normal speed, bits 1-6 are always 1)
         public byte KEY1 = 0x7E;
@@ -86,10 +87,10 @@ namespace GameboyTest
             }
             // 5. Echo RAM (Mirrors 0xC000 - 0xDDFF)
             if (address >= 0xE000 && address <= 0xFDFF)
-                return eram[address - 0xE000]; // Subtract 0x2000 to map back to WRAM
+                return ReadByte((ushort)(address - 0x2000));// Subtract 0x2000 to map back to WRAM
 
             // 6. OAM (Object Attribute Memory for Sprites)
-            
+
             if (address >= 0xFE00 && address <= 0xFE9F)
                 if (oam_switch)
                 {
@@ -115,12 +116,18 @@ namespace GameboyTest
             if (address == 0xFF05) { return SystemTimer.TIMA; }
             // 8. I/O Registers
             // ... (your timer interceptions) ...
-
+            if (address == 0xFF26) return (byte)(io[0x26] & 0xF0);
             if (address == 0xFF68) return ppu.BCPS;
+            if (address == 0xFF4F) return ppu.VBK;
             if (address == 0xFF69) return ppu.ReadBgPaletteData(); // BCPD
             if (address == 0xFF6A) return ppu.OCPS;
             if (address == 0xFF6B) return ppu.ReadObjPaletteData(); // OCPD
             if (address == 0xFF4D) return KEY1;
+            if (address == 0xFF56) return RP;
+           
+            if (address == 0xFF70) return SVBK;
+            if (address == 0xFF55) return io[0x55];
+
             if (address == 0xFF56) return RP;
             if (address >= 0xFF51 && address <= 0xFF54) return 0xFF;
             if (address >= 0xFF00 && address <= 0xFF7F)
@@ -175,8 +182,10 @@ namespace GameboyTest
             }
             // 5. Echo RAM (Writing here actually writes to WRAM!)
             else if (address >= 0xE000 && address <= 0xFDFF)
-                eram[address - 0xE000] = value;
-
+            {
+                WriteByte((ushort)(address - 0x2000), value);
+                return; // Don't forget to return so we don't accidentally write twice!
+            }
             // 6. OAM (Sprite Data)
             else if (address >= 0xFE00 && address <= 0xFE9F)
             {
@@ -200,27 +209,30 @@ namespace GameboyTest
             if (address == 0xFF07) {SystemTimer.TAC= value; return; }
             if (address == 0xFF05) { SystemTimer.TIMA = value; io[0x5] = value; return; }
             if (address == 0xFF06) { SystemTimer.TMA = value; return; }
-            if (address == 0xFF4D)
-            {
-                // The CPU can ONLY write to Bit 0. Bit 7 is preserved. Bits 1-6 stay 1.
-                KEY1 = (byte)((KEY1 & 0x80) | (value & 0x01) | 0x7E);
-            }
+
             if (address == 0xFF46)
             {
                 DmaTransfer(value);
                 
                 oam_store = value;
             }
-            if (address == 0xFF55)
-            {
-                WriteHdma5(value); // Trigger the transfer!
-            }
+
             if (address == 0xFF68) ppu.BCPS = value;
             if (address == 0xFF69) ppu.WriteBgPaletteData(value); // BCPD
             if (address == 0xFF6A) ppu.OCPS = value;
             if (address == 0xFF6B) ppu.WriteObjPaletteData(value);
             if (address == 0xFF56) RP = (byte)(value & 0xC3);
+            // --- GBC I/O INTERCEPTS ---
+            else if (address == 0xFF4D) KEY1 = (byte)((KEY1 & 0x80) | (value & 0x01) | 0x7E);
+            else if (address == 0xFF4F) ppu.VBK = value;
 
+            // THE FIX: Directly update the active pointers. No more stale 'io' arrays or dirty flags!
+            else if (address == 0xFF51) hdmaSource = (ushort)((hdmaSource & 0x00FF) | (value << 8));
+            else if (address == 0xFF52) hdmaSource = (ushort)((hdmaSource & 0xFF00) | (value & 0xF0)); // Lower 4 bits ignored
+            else if (address == 0xFF53) hdmaDest = (ushort)((hdmaDest & 0x00FF) | ((value & 0x1F) << 8) | 0x8000); // Forced to VRAM
+            else if (address == 0xFF54) hdmaDest = (ushort)((hdmaDest & 0xFF00) | (value & 0xF0)); // Lower 4 bits ignored
+
+            else if (address == 0xFF55) WriteHdma5(value);
             else if (address >= 0xFF00 && address <= 0xFF7F)
             {
                 // NOTE: Similar to reading, you will intercept specific writes here later.
@@ -386,54 +398,35 @@ namespace GameboyTest
             }
             
         }
+        // --- GBC HDMA LOGIC ---
         private void WriteHdma5(byte value)
         {
-            // 1. Check if we are interacting with an ALREADY ACTIVE H-Blank DMA
             if (hdmaActive)
             {
-                // Writing with Bit 7 = 0 cancels the transfer. 
-                // Writing with Bit 7 = 1 while active is ignored by the hardware!
                 if ((value & 0x80) == 0)
                 {
                     hdmaActive = false;
-                    // Leave remaining blocks in lower 7 bits, but SET Bit 7 to 1 to show it's stopped
                     io[0x55] = (byte)((hdmaBlocksRemaining - 1) | 0x80);
                 }
                 return;
             }
 
-            // 2. Start a New Transfer
-            // Calculate Source Address (Mask out the lower 4 bits to 0)
-            hdmaSource = (ushort)(((io[0x51] << 8) | io[0x52]) & 0xFFF0);
 
-            // Calculate Destination Address (Force into VRAM: 0x8000-0x9FF0)
-            hdmaDest = (ushort)((((io[0x53] << 8) | io[0x54]) & 0x1FF0) | 0x8000);
 
             hdmaBlocksRemaining = (value & 0x7F) + 1;
             bool isHBlankDma = (value & 0x80) != 0;
 
             if (!isHBlankDma)
             {
-                // --- GENERAL PURPOSE DMA (GDMA) ---
-                for (int i = 0; i < hdmaBlocksRemaining; i++)
-                {
-                    PerformHdmaBlock();
-                }
+                for (int i = 0; i < hdmaBlocksRemaining; i++) PerformHdmaBlock();
                 hdmaActive = false;
-                io[0x55] = 0xFF; // Complete
+                io[0x55] = 0xFF;
             }
             else
             {
-                // --- H-BLANK DMA (HDMA) ---
                 hdmaActive = true;
-                io[0x55] = (byte)(hdmaBlocksRemaining - 1); // Bit 7 = 0 means active
-
-                // PAN DOCS QUIRK: If the LCD is ON and the PPU is ALREADY in Mode 0 (H-Blank), 
-                // the first 16-byte block transfers instantly right now!
-                if ((ppu.LCDC & 0x80) != 0 && (ppu.STAT & 0x03) == 0)
-                {
-                    PerformHdmaBlock();
-                }
+                io[0x55] = (byte)(hdmaBlocksRemaining - 1);
+                if ((ppu.LCDC & 0x80) != 0 && (ppu.STAT & 0x03) == 0) PerformHdmaBlock();
             }
         }
 
@@ -447,27 +440,25 @@ namespace GameboyTest
                 WriteByte((ushort)(hdmaDest + i), data);
             }
 
+            // THE FUN FACT: Incrementing the internal trackers so they resume smoothly!
             hdmaSource += 16;
             hdmaDest += 16;
 
-            // PAN DOCS QUIRK: Dest must wrap around VRAM if it overflows!
-            if (hdmaDest > 0x9FFF)
-            {
-                hdmaDest = (ushort)(0x8000 + (hdmaDest & 0x1FFF));
-            }
+            if (hdmaDest > 0x9FFF) hdmaDest = (ushort)(0x8000 + (hdmaDest & 0x1FFF));
 
             hdmaBlocksRemaining--;
 
             if (hdmaBlocksRemaining == 0)
             {
                 hdmaActive = false;
-                io[0x55] = 0xFF; // Transfer Complete
+                io[0x55] = 0xFF;
             }
             else
             {
-                // Update register to show how many blocks are left (minus 1)
                 io[0x55] = (byte)(hdmaBlocksRemaining - 1);
             }
         }
+
+        //
     }
 }
