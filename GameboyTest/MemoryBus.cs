@@ -418,9 +418,12 @@ namespace GameboyTest
 
             if (!isHBlankDma)
             {
-                for (int i = 0; i < hdmaBlocksRemaining; i++) PerformHdmaBlock();
-                hdmaActive = false;
-                io[0x55] = 0xFF;
+                hdmaActive = true; // FIX: We have to actually turn the DMA on!
+
+                while (hdmaBlocksRemaining > 0) //FIXES DRAGON BALL Z , ZELD SEASONS AND AGES AND MICKEY MOUSE RACING 
+                {
+                    PerformHdmaBlock();
+                }
             }
             else
             {

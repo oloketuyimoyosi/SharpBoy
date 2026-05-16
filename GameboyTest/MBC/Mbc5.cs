@@ -35,29 +35,25 @@ namespace GameboyTest.MBC
             {
                 int offset = address - 0x4000;
 
-                // Make sure we don't crash if the bank is too high
-                if (currentRomBank < romBanks.Length)
-                {
-                    return romBanks[currentRomBank][offset];
-                }
+                // THE FIX: Use Modulo to wrap the bank around if it exceeds the array bounds!
+                int mappedBank = currentRomBank % romBanks.Length;
+                return romBanks[mappedBank][offset];
             }
             // 3. External RAM (0xA000 - 0xBFFF)
             else if (address >= 0xA000 && address <= 0xBFFF)
             {
-                if (ramEnabled)
+                if (ramEnabled && ramBanks != null && ramBanks.Length > 0)
                 {
-                    // Return the data from the ram banks array instead of making a new one
-                    if (ramBanks != null && currentRamBank < ramBanks.Length)
-                    {
-                        int offset = address - 0xA000;
-                        return ramBanks[currentRamBank][offset];
-                    }
+                    int offset = address - 0xA000;
+
+                    // Apply the exact same Modulo fix to the RAM banks!
+                    int mappedRam = currentRamBank % ramBanks.Length;
+                    return ramBanks[mappedRam][offset];
                 }
             }
 
-            return 0xFF; // Return default empty bus value if nothing matches
+            return 0xFF;
         }
-
         public void Write(ushort address, byte value)
         {
             // 1. Enable/Disable RAM
