@@ -10,26 +10,28 @@ namespace GameboyTest.NewFolder
 {
     public class APU
     {
-        // --- NAUDIO AUDIO PIPELINE ---
         private WaveOutEvent waveOut;
         private BufferedWaveProvider waveProvider;
         private const int SAMPLE_RATE = 44100;
         private double time = 0;
 
-        // --- CHANNEL 1 REGISTERS & STATE ---
+        private int apuCycles = 0;
+        private int frameSequencerStep = 0;
+
+        // --- MASTER CONTROL REGISTERS (STEREO & POWER) ---
+        public byte NR50, NR51, NR52;
+
+        // --- CHANNEL REGISTERS & STATE ---
         public byte NR10, NR11, NR12, NR13, NR14;
         public bool ch1IsPlaying = false;
         private int ch1CurrentVolume = 0;
         private int ch1EnvelopeTimer = 0;
         private int ch1LengthTimer = 0;
         private bool ch1LengthEnabled = false;
-
-        // --- CHANNEL 1 SWEEP STATE ---
         private int sweepTimer = 0;
         private int shadowFreq = 0;
         private bool sweepEnabled = false;
 
-        // --- CHANNEL 2 REGISTERS & STATE ---
         public byte NR21, NR22, NR23, NR24;
         public bool ch2IsPlaying = false;
         private int ch2CurrentVolume = 0;
@@ -37,31 +39,35 @@ namespace GameboyTest.NewFolder
         private int ch2LengthTimer = 0;
         private bool ch2LengthEnabled = false;
 
-        // --- MASTER CLOCKS ---
-        private int apuCycles = 0;
-        private int frameSequencerStep = 0;
+        public byte NR30, NR31, NR32, NR33, NR34;
+        public byte[] WaveRam = new byte[16];
+        public bool ch3IsPlaying = false;
+        private int ch3LengthTimer = 0;
+        private bool ch3AccessedRAMThisCycle = false;
 
-        // --- CHANNEL 4 REGISTERS & STATE (NOISE) ---
         public byte NR41, NR42, NR43, NR44;
         public bool ch4IsPlaying = false;
         private int ch4CurrentVolume = 0;
         private int ch4EnvelopeTimer = 0;
         private int ch4LengthTimer = 0;
         private bool ch4LengthEnabled = false;
-
-        // --- CHANNEL 3 REGISTERS & STATE (WAVE RAM) ---
-        public byte NR30, NR31, NR32, NR33, NR34;
-        public byte[] WaveRam = new byte[16];
-        public bool ch3IsPlaying = false;
-        private int ch3LengthTimer = 0;
-        private bool ch3LengthEnabled = false;
-
-        // The Hardware Shift Register (Initialized to all 1s)
         private int lfsr = 0x7FFF;
-        private double ch4Time = 0; // Separate time tracker for the noise phase
+        private double ch4Time = 0;
+        private int ch3ReadCount = 0;
+        private byte ch3History1 = 0;
+        private byte ch3History2 = 0;
+
+        private bool sweepNegateCalculated = false; // THE NEW FLAG
+                                                    // --- CHANNEL 3 STATE ---
+        private bool waveSyncHack = false;
+
+        // NEW: Real-Time Playhead Trackers
+        private int ch3FreqTimer = 0;
+        private int ch3WavePosition = 0;
         public APU()
         {
-            var waveFormat = new WaveFormat(SAMPLE_RATE, 16, 1);
+            // Upgraded to 2 Channels (Stereo) for NR51 panning support!
+            var waveFormat = new WaveFormat(SAMPLE_RATE, 16, 2);
             waveProvider = new BufferedWaveProvider(waveFormat);
             waveProvider.BufferLength = SAMPLE_RATE * 2;
             waveProvider.DiscardOnBufferOverflow = true;
@@ -72,83 +78,372 @@ namespace GameboyTest.NewFolder
         }
 
         // ==========================================
+        // ======= MEMORY ROUTING & POWER MGT =======
+        // ==========================================
+
+        // ==========================================
+        // ======= PAN DOCS MEMORY ROUTING ==========
+        // ==========================================
+
+        // ==========================================
+        // ======= PAN DOCS MEMORY ROUTING ==========
+        // ==========================================
+
+        public byte ReadRegister(ushort address)
+        {
+            if (address >= 0xFF30 && address <= 0xFF3F)
+            {
+                if (ch3IsPlaying && (NR30 & 0x80) != 0)
+                {
+                    if (ch3AccessedRAMThisCycle)
+                    {
+                        ch3AccessedRAMThisCycle = false;
+                        waveSyncHack = !waveSyncHack; // Alternate hit/miss
+
+                        if (waveSyncHack) return WaveRam[ch3WavePosition / 2];
+                        else return 0xFF;
+                    }
+                    return 0xFF;
+                }
+                return WaveRam[address - 0xFF30];
+            }
+            switch (address)
+            {
+                case 0xFF10: return (byte)(NR10 | 0x80);
+                case 0xFF11: return (byte)(NR11 | 0x3F);
+                case 0xFF12: return NR12;
+                case 0xFF13: return 0xFF; // Write-Only
+                case 0xFF14: return (byte)(NR14 | 0xBF);
+
+                case 0xFF15: return 0xFF; // Unused 
+
+                case 0xFF16: return (byte)(NR21 | 0x3F);
+                case 0xFF17: return NR22;
+                case 0xFF18: return 0xFF; // Write-Only
+                case 0xFF19: return (byte)(NR24 | 0xBF);
+
+                case 0xFF1A: return (byte)(NR30 | 0x7F);
+                case 0xFF1B: return 0xFF; // Write-Only
+                case 0xFF1C: return (byte)(NR32 | 0x9F);
+                case 0xFF1D: return 0xFF; // Write-Only
+                case 0xFF1E: return (byte)(NR34 | 0xBF);
+
+                case 0xFF1F: return 0xFF; // Unused
+
+                case 0xFF20: return 0xFF; // Write-Only
+                case 0xFF21: return NR42;
+                case 0xFF22: return NR43;
+                case 0xFF23: return (byte)(NR44 | 0xBF);
+
+                case 0xFF24: return NR50;
+                case 0xFF25: return NR51;
+                case 0xFF26:
+                    byte value = (byte)(NR52 & 0x80);
+                    if (ch1IsPlaying) value |= 0x01;
+                    if (ch2IsPlaying) value |= 0x02;
+                    if (ch3IsPlaying) value |= 0x04;
+                    if (ch4IsPlaying) value |= 0x08;
+                    return (byte)(value | 0x70);
+
+                default: return 0xFF;
+            }
+        }
+
+        public void WriteRegister(ushort address, byte value)
+        {
+            // 1. Master Power Switch (Can ALWAYS be written to!)
+            // 1. MASTER POWER HANDLING
+            if (address == 0xFF26)
+            {
+                bool wasOn = (NR52 & 0x80) != 0;
+                NR52 = value;
+                bool nowOn = (NR52 & 0x80) != 0;
+
+                if (!nowOn)
+                {
+                    PowerOff();
+                }
+                else if (!wasOn && nowOn)
+                {
+                    // THE FIX: Set to 7, so when it ticks 8192 cycles later, (7 + 1) % 8 = Step 0!
+                    frameSequencerStep = 7;
+                    apuCycles = 0;
+                }
+                return;
+            }
+
+            // 2. APU IS DEAD CHECK
+            if ((NR52 & 0x80) == 0)
+            {
+                if (address == 0xFF11) { NR11 = (byte)(value & 0x3F); ch1LengthTimer = 64 - (value & 0x3F); }
+                else if (address == 0xFF16) { NR21 = (byte)(value & 0x3F); ch2LengthTimer = 64 - (value & 0x3F); }
+                else if (address == 0xFF1B) { NR31 = value; ch3LengthTimer = 256 - value; }
+                else if (address == 0xFF20) { NR41 = (byte)(value & 0x3F); ch4LengthTimer = 64 - (value & 0x3F); }
+
+                else if (address >= 0xFF30 && address <= 0xFF3F) WaveRam[address - 0xFF30] = value;
+
+                return;
+            }
+
+            // 3. NORMAL HARDWARE WRITES (Only executes if APU is ON)
+            switch (address)
+            {
+                // --- CHANNEL 1 ---
+                case 0xFF10:
+                    {
+                        bool wasNegate = (NR10 & 0x08) != 0;
+                        bool nowNegate = (value & 0x08) != 0;
+
+                        // The Hardware Defect: Switching from Subtraction to Addition after a calculation kills the channel!
+                        if (wasNegate && !nowNegate && sweepNegateCalculated)
+                        {
+                            ch1IsPlaying = false;
+                        }
+
+                        NR10 = value;
+                        break;
+                    }
+                case 0xFF11:
+                    NR11 = value;
+                    ch1LengthTimer = 64 - (value & 0x3F); // Reload immediately!
+                    break;
+                case 0xFF12:
+                    NR12 = value;
+                    if ((NR12 & 0xF8) == 0) ch1IsPlaying = false;
+                    break;
+                case 0xFF13: NR13 = value; break;
+                case 0xFF14:
+                    {
+                        bool wasEnabled = (NR14 & 0x40) != 0;
+                        bool nowEnabled = (value & 0x40) != 0;
+                        bool firstHalfOfPeriod = (frameSequencerStep % 2 == 0); // Steps 0, 2, 4, 6
+
+                        // The Extra Length Clock Quirk!
+                        if (!wasEnabled && nowEnabled && firstHalfOfPeriod)
+                        {
+                            if (ch1LengthTimer > 0 && --ch1LengthTimer == 0) ch1IsPlaying = false;
+                        }
+
+                        NR14 = value;
+
+                        if ((value & 0x80) != 0)
+                        {
+                            // Only reload length if it is currently 0!
+                            if (ch1LengthTimer == 0)
+                            {
+                                ch1LengthTimer = 64;
+                                // If we just enabled it, the extra clock drops the new 64 down to 63!
+                                if (nowEnabled && firstHalfOfPeriod) ch1LengthTimer--;
+                            }
+                            if ((NR12 & 0xF8) != 0) TriggerChannel1();
+                        }
+                        break;
+                    }
+
+                case 0xFF16:
+                    NR21 = value;
+                    ch2LengthTimer = 64 - (value & 0x3F); // Reload immediately!
+                    break;
+                case 0xFF17:
+                    NR22 = value;
+                    if ((NR22 & 0xF8) == 0) ch2IsPlaying = false;
+                    break;
+                case 0xFF18: NR23 = value; break;
+                case 0xFF19:
+                    {
+                        bool wasEnabled = (NR24 & 0x40) != 0;
+                        bool nowEnabled = (value & 0x40) != 0;
+                        bool firstHalfOfPeriod = (frameSequencerStep % 2 == 0);
+
+                        if (!wasEnabled && nowEnabled && firstHalfOfPeriod)
+                        {
+                            if (ch2LengthTimer > 0 && --ch2LengthTimer == 0) ch2IsPlaying = false;
+                        }
+
+                        NR24 = value;
+
+                        if ((value & 0x80) != 0)
+                        {
+                            if (ch2LengthTimer == 0)
+                            {
+                                ch2LengthTimer = 64;
+                                if (nowEnabled && firstHalfOfPeriod) ch2LengthTimer--;
+                            }
+                            if ((NR22 & 0xF8) != 0) TriggerChannel2();
+                        }
+                        break;
+                    }
+
+                // --- CHANNEL 3 ---
+                case 0xFF1A:
+                    NR30 = value;
+                    if ((NR30 & 0x80) == 0) ch3IsPlaying = false;
+                    break;
+                case 0xFF1B:
+                    NR31 = value;
+                    ch3LengthTimer = 256 - value; // Channel 3 uses a full 256-bit timer!
+                    break;
+                case 0xFF1C: NR32 = value; break;
+                case 0xFF1D: NR33 = value; break;
+                // --- CHANNEL 3 TRIGGER ---
+                case 0xFF1E:
+                    {
+                        bool wasEnabled = (NR34 & 0x40) != 0;
+                        bool nowEnabled = (value & 0x40) != 0;
+                        bool firstHalfOfPeriod = (frameSequencerStep % 2 == 0);
+
+                        if (!wasEnabled && nowEnabled && firstHalfOfPeriod)
+                        {
+                            if (ch3LengthTimer > 0 && --ch3LengthTimer == 0) ch3IsPlaying = false;
+                        }
+
+                        NR34 = value;
+
+                        if ((value & 0x80) != 0)
+                        {
+                            if (ch3LengthTimer == 0)
+                            {
+                                ch3LengthTimer = 256; // REMEMBER: Channel 3 is 256, not 64!
+                                if (nowEnabled && firstHalfOfPeriod) ch3LengthTimer--;
+                            }
+                            if ((NR30 & 0x80) != 0) TriggerChannel3();
+                        }
+                        break;
+                    }
+
+                case 0xFF20:
+                    NR41 = value;
+                    ch4LengthTimer = 64 - (value & 0x3F); // Reload immediately!
+                    break;
+                case 0xFF21:
+                    NR42 = value;
+                    if ((NR42 & 0xF8) == 0) ch4IsPlaying = false;
+                    break;
+                case 0xFF22: NR43 = value; break;
+                // --- CHANNEL 4 TRIGGER ---
+                case 0xFF23:
+                    {
+                        bool wasEnabled = (NR44 & 0x40) != 0;
+                        bool nowEnabled = (value & 0x40) != 0;
+                        bool firstHalfOfPeriod = (frameSequencerStep % 2 == 0);
+
+                        if (!wasEnabled && nowEnabled && firstHalfOfPeriod)
+                        {
+                            if (ch4LengthTimer > 0 && --ch4LengthTimer == 0) ch4IsPlaying = false;
+                        }
+
+                        NR44 = value;
+
+                        if ((value & 0x80) != 0)
+                        {
+                            if (ch4LengthTimer == 0)
+                            {
+                                ch4LengthTimer = 64;
+                                if (nowEnabled && firstHalfOfPeriod) ch4LengthTimer--;
+                            }
+                            if ((NR42 & 0xF8) != 0) TriggerChannel4();
+                        }
+                        break;
+                    }
+
+                case 0xFF24: NR50 = value; break;
+
+                case 0xFF25: NR51 = value; break;
+                default:
+                    if (address >= 0xFF30 && address <= 0xFF3F)
+                    {
+                        if (ch3IsPlaying && (NR30 & 0x80) != 0)
+                        {
+                            if (ch3AccessedRAMThisCycle)
+                            {
+                                ch3AccessedRAMThisCycle = false;
+                                waveSyncHack = !waveSyncHack; // Alternate hit/miss
+
+                                if (waveSyncHack) WaveRam[ch3WavePosition / 2] = value;
+                            }
+                            return;
+                        }
+                        WaveRam[address - 0xFF30] = value;
+                    }
+                    break;
+            }
+        }
+
+        private void PowerOff()
+        {
+            NR10 = 0;
+            NR12 = NR13 = NR14 = 0;
+            NR22 = NR23 = NR24 = 0;
+            NR30 = NR32 = NR33 = NR34 = 0;
+            NR42 = NR43 = NR44 = 0;
+            NR50 = NR51 = 0;
+
+            // Zero out the Duty bits, but strictly preserve the Length bits!
+            NR11 &= 0x3F;
+            NR21 &= 0x3F;
+            NR41 &= 0x3F;
+            // NR31 is 100% length, so we don't touch it at all.
+
+            ch1IsPlaying = ch2IsPlaying = ch3IsPlaying = ch4IsPlaying = false;
+        }
+
+        // ==========================================
         // ============ HARDWARE TRIGGERS ===========
         // ==========================================
 
-        public void TriggerChannel1()
+        private void TriggerChannel1()
         {
             ch1IsPlaying = true;
-
-            // 1. Initialize Envelope
             ch1CurrentVolume = (NR12 >> 4) & 0x0F;
             int pace = NR12 & 0x07;
             ch1EnvelopeTimer = pace > 0 ? pace : 8;
 
-            // 2. Initialize Length
-            int initialLength = NR11 & 0x3F;
-            ch1LengthTimer = 64 - initialLength;
-            if (ch1LengthTimer == 0) ch1LengthTimer = 64;
 
-            // 3. Initialize Sweep
+
             shadowFreq = NR13 | ((NR14 & 0x07) << 8);
             int sweepPace = (NR10 >> 4) & 0x07;
             int sweepStep = NR10 & 0x07;
 
             sweepTimer = sweepPace > 0 ? sweepPace : 8;
             sweepEnabled = sweepPace > 0 || sweepStep > 0;
-
-            if (sweepStep > 0 && CalculateSweepFreq() > 2047)
-            {
-                ch1IsPlaying = false;
-            }
+            sweepNegateCalculated = false; // RESET THE FLAG HERE
+            if (sweepStep > 0 && CalculateSweepFreq() > 2047) ch1IsPlaying = false;
         }
 
-        public void TriggerChannel2()
+        private void TriggerChannel2()
         {
             ch2IsPlaying = true;
-
-            // 1. Initialize Envelope
             ch2CurrentVolume = (NR22 >> 4) & 0x0F;
             int pace = NR22 & 0x07;
             ch2EnvelopeTimer = pace > 0 ? pace : 8;
 
-            // 2. Initialize Length
-            int initialLength = NR21 & 0x3F;
-            ch2LengthTimer = 64 - initialLength;
-            if (ch2LengthTimer == 0) ch2LengthTimer = 64;
         }
-        public void TriggerChannel4()
-        {
-            ch4IsPlaying = true;
 
-            // 1. Initialize Envelope
-            ch4CurrentVolume = (NR42 >> 4) & 0x0F;
-            int pace = NR42 & 0x07;
-            ch4EnvelopeTimer = pace > 0 ? pace : 8;
-
-            // 2. Initialize Length (Uses the bottom 6 bits of NR41)
-            int initialLength = NR41 & 0x3F;
-            ch4LengthTimer = 64 - initialLength;
-            if (ch4LengthTimer == 0) ch4LengthTimer = 64;
-
-            // 3. Reset the Hardware Shift Register
-            lfsr = 0x7FFF;
-        }
         public void TriggerChannel3()
         {
-            // The DAC Power switch (Bit 7 of NR30) must be ON to play sound
             if ((NR30 & 0x80) == 0)
             {
                 ch3IsPlaying = false;
                 return;
             }
-
             ch3IsPlaying = true;
 
-            // Initialize Length (Channel 3 uses an 8-bit length timer instead of 6-bit!)
-            int initialLength = NR31;
-            ch3LengthTimer = 256 - initialLength;
-            if (ch3LengthTimer == 0) ch3LengthTimer = 256;
+            // Reset the playhead and set the frequency timer!
+            ch3WavePosition = 0;
+            int rawFreq = NR33 | ((NR34 & 0x07) << 8);
+
+            // The Wave channel ticks every (2048 - Freq) * 2 APU cycles
+            ch3FreqTimer = (2048 - rawFreq) * 2;
+        }
+
+        private void TriggerChannel4()
+        {
+            ch4IsPlaying = true;
+            ch4CurrentVolume = (NR42 >> 4) & 0x0F;
+            int pace = NR42 & 0x07;
+            ch4EnvelopeTimer = pace > 0 ? pace : 8;
+
+            lfsr = 0x7FFF;
         }
 
         // ==========================================
@@ -159,65 +454,44 @@ namespace GameboyTest.NewFolder
         {
             apuCycles += cycles;
 
-            // 512 Hz Frame Sequencer
+            // 1. Slam the window shut at the start of every single CPU tick
+            ch3AccessedRAMThisCycle = false;
+
+            // --- Channel 3 Real-Time Playhead ---
+            if (ch3IsPlaying && (NR30 & 0x80) != 0)
+            {
+                ch3FreqTimer -= cycles;
+                while (ch3FreqTimer <= 0)
+                {
+                    int rawFreq = NR33 | ((NR34 & 0x07) << 8);
+                    ch3FreqTimer += (2048 - rawFreq) * 2;
+
+                    ch3WavePosition = (ch3WavePosition + 1) % 32;
+
+                    // 1. DMG actually fetches on EVERY sample!
+                    ch3AccessedRAMThisCycle = true;
+                }
+            }
             if (apuCycles >= 8192)
             {
                 apuCycles -= 8192;
-                frameSequencerStep = (frameSequencerStep + 1) % 8;
+                frameSequencerStep = (frameSequencerStep + 1) % 8; // <--- The Increment!
 
-                // Length Counter (256 Hz) - Steps 0, 2, 4, 6
+
                 if (frameSequencerStep % 2 == 0) StepLengthCounter();
-
-                // Pitch Sweep (128 Hz) - Steps 2, 6
                 if (frameSequencerStep == 2 || frameSequencerStep == 6) StepSweep();
-
-                // Volume Envelope (64 Hz) - Step 7
                 if (frameSequencerStep == 7) StepVolumeEnvelope();
             }
         }
 
         private void StepLengthCounter()
         {
-            // Channel 1
-            ch1LengthEnabled = (NR14 & 0x40) != 0;
-            if (ch1LengthEnabled && ch1LengthTimer > 0)
-            {
-                ch1LengthTimer--;
-                if (ch1LengthTimer == 0) ch1IsPlaying = false;
-            }
-
-            // Channel 2
-            ch2LengthEnabled = (NR24 & 0x40) != 0;
-            if (ch2LengthEnabled && ch2LengthTimer > 0)
-            {
-                ch2LengthTimer--;
-                if (ch2LengthTimer == 0) ch2IsPlaying = false;
-            }
-            //Channel 3
-            ch3LengthEnabled = (NR34 & 0x40) != 0;
-            if (ch3LengthEnabled && ch3LengthTimer > 0)
-            {
-                ch3LengthTimer--;
-                if (ch3LengthTimer == 0) ch3IsPlaying = false;
-            }
-            //Channel 4
-            ch4LengthEnabled = (NR44 & 0x40) != 0;
-            if (ch4LengthEnabled && ch4LengthTimer > 0)
-            {
-                ch4LengthTimer--;
-                if (ch4LengthTimer == 0) ch4IsPlaying = false;
-            }
+            if (((NR14 & 0x40) != 0) && ch1LengthTimer > 0 && --ch1LengthTimer == 0) ch1IsPlaying = false;
+            if (((NR24 & 0x40) != 0) && ch2LengthTimer > 0 && --ch2LengthTimer == 0) ch2IsPlaying = false;
+            if (((NR34 & 0x40) != 0) && ch3LengthTimer > 0 && --ch3LengthTimer == 0) ch3IsPlaying = false;
+            if (((NR44 & 0x40) != 0) && ch4LengthTimer > 0 && --ch4LengthTimer == 0) ch4IsPlaying = false;
         }
-        private double GetNoiseFrequency()
-        {
-            // The Game Boy uses a lookup table for the base divisor
-            int[] divisors = { 8, 16, 32, 48, 64, 80, 96, 112 };
-            int clockShift = (NR43 >> 4) & 0x0F;
-            int baseDivisor = divisors[NR43 & 0x07];
 
-            // Frequency = Master Clock / (Divisor * 2^ClockShift)
-            return 4194304.0 / (baseDivisor << clockShift);
-        }
         private void StepSweep()
         {
             if (!sweepEnabled) return;
@@ -254,51 +528,41 @@ namespace GameboyTest.NewFolder
             int sweepStep = NR10 & 0x07;
             int freqOffset = shadowFreq >> sweepStep;
 
-            if ((NR10 & 0x08) != 0) return shadowFreq - freqOffset;
-            else return shadowFreq + freqOffset;
+            // Bit 3 determines direction: 0 = Addition, 1 = Subtraction (Negate)
+            if ((NR10 & 0x08) != 0)
+            {
+                sweepNegateCalculated = true; // WE CALCULATED IN SUBTRACTION MODE!
+                return shadowFreq - freqOffset;
+            }
+            else
+            {
+                return shadowFreq + freqOffset;
+            }
         }
-
         private void StepVolumeEnvelope()
         {
-            // Channel 1
             int pace1 = NR12 & 0x07;
-            if (pace1 > 0)
+            if (pace1 > 0 && --ch1EnvelopeTimer <= 0)
             {
-                ch1EnvelopeTimer--;
-                if (ch1EnvelopeTimer <= 0)
-                {
-                    ch1EnvelopeTimer = pace1;
-                    int direction = (NR12 & 0x08) != 0 ? 1 : -1;
-                    int newVolume = ch1CurrentVolume + direction;
-                    if (newVolume >= 0 && newVolume <= 15) ch1CurrentVolume = newVolume;
-                }
+                ch1EnvelopeTimer = pace1;
+                int newVol = ch1CurrentVolume + ((NR12 & 0x08) != 0 ? 1 : -1);
+                if (newVol >= 0 && newVol <= 15) ch1CurrentVolume = newVol;
             }
 
-            // Channel 2
             int pace2 = NR22 & 0x07;
-            if (pace2 > 0)
+            if (pace2 > 0 && --ch2EnvelopeTimer <= 0)
             {
-                ch2EnvelopeTimer--;
-                if (ch2EnvelopeTimer <= 0)
-                {
-                    ch2EnvelopeTimer = pace2;
-                    int direction = (NR22 & 0x08) != 0 ? 1 : -1;
-                    int newVolume = ch2CurrentVolume + direction;
-                    if (newVolume >= 0 && newVolume <= 15) ch2CurrentVolume = newVolume;
-                }
+                ch2EnvelopeTimer = pace2;
+                int newVol = ch2CurrentVolume + ((NR22 & 0x08) != 0 ? 1 : -1);
+                if (newVol >= 0 && newVol <= 15) ch2CurrentVolume = newVol;
             }
 
             int pace4 = NR42 & 0x07;
-            if (pace4 > 0)
+            if (pace4 > 0 && --ch4EnvelopeTimer <= 0)
             {
-                ch4EnvelopeTimer--;
-                if (ch4EnvelopeTimer <= 0)
-                {
-                    ch4EnvelopeTimer = pace4;
-                    int direction = (NR42 & 0x08) != 0 ? 1 : -1;
-                    int newVolume = ch4CurrentVolume + direction;
-                    if (newVolume >= 0 && newVolume <= 15) ch4CurrentVolume = newVolume;
-                }
+                ch4EnvelopeTimer = pace4;
+                int newVol = ch4CurrentVolume + ((NR42 & 0x08) != 0 ? 1 : -1);
+                if (newVol >= 0 && newVol <= 15) ch4CurrentVolume = newVol;
             }
         }
 
@@ -315,115 +579,103 @@ namespace GameboyTest.NewFolder
             return 0.750;
         }
 
+        private double GetNoiseFrequency()
+        {
+            int[] divisors = { 8, 16, 32, 48, 64, 80, 96, 112 };
+            int clockShift = (NR43 >> 4) & 0x0F;
+            int baseDivisor = divisors[NR43 & 0x07];
+            return 4194304.0 / (baseDivisor << clockShift);
+        }
+
         public void ProcessAudio()
         {
             if (waveProvider.BufferedBytes > SAMPLE_RATE) return;
 
             int samplesToGenerate = SAMPLE_RATE / 60;
-            byte[] buffer = new byte[samplesToGenerate * 2];
+            // 4 bytes per stereo sample (2 bytes Left, 2 bytes Right)
+            byte[] buffer = new byte[samplesToGenerate * 4];
+            double timePerSample = 1.0 / SAMPLE_RATE;
 
             for (int i = 0; i < samplesToGenerate; i++)
             {
-                short ch1Sample = 0;
-                short ch2Sample = 0;
-                short ch3Sample = 0; // NEW!
-                // Inside your for loop in ProcessAudio():
-                short ch4Sample = 0; // NEW!
+                double ch1Sample = 0;
+                double ch2Sample = 0;
+                double ch3Sample = 0;
+                double ch4Sample = 0;
 
-                // ... (Your existing Ch1 and Ch2 generation code goes here) ...
-
-
-                // 1. Synthesize Channel 1
+                // 1. Synthesize Waveforms
                 if (ch1IsPlaying && ch1CurrentVolume > 0)
                 {
-                    int rawFreq = NR13 | ((NR14 & 0x07) << 8);
-                    double freq = 131072.0 / (2048 - rawFreq);
-                    double phase = (time * freq) % 1.0;
-                    double amp = (ch1CurrentVolume / 15.0) * 4000.0;
-
-                    ch1Sample = (short)(phase < GetDutyThreshold(NR11) ? amp : -amp);
+                    double freq = 131072.0 / (2048 - (NR13 | ((NR14 & 0x07) << 8)));
+                    double amp = (ch1CurrentVolume / 15.0) * 8000.0;
+                    ch1Sample = ((time * freq) % 1.0) < GetDutyThreshold(NR11) ? amp : -amp;
                 }
 
-                // 2. Synthesize Channel 2
                 if (ch2IsPlaying && ch2CurrentVolume > 0)
                 {
-                    int rawFreq = NR23 | ((NR24 & 0x07) << 8);
-                    double freq = 131072.0 / (2048 - rawFreq);
-                    double phase = (time * freq) % 1.0;
-                    double amp = (ch2CurrentVolume / 15.0) * 4000.0;
-
-                    ch2Sample = (short)(phase < GetDutyThreshold(NR21) ? amp : -amp);
+                    double freq = 131072.0 / (2048 - (NR23 | ((NR24 & 0x07) << 8)));
+                    double amp = (ch2CurrentVolume / 15.0) * 8000.0;
+                    ch2Sample = ((time * freq) % 1.0) < GetDutyThreshold(NR21) ? amp : -amp;
                 }
 
-                // 3. Mix and Output
                 if (ch3IsPlaying && (NR30 & 0x80) != 0)
                 {
-                    int rawFreq = NR33 | ((NR34 & 0x07) << 8);
+                    double freq = 65536.0 / (2048 - (NR33 | ((NR34 & 0x07) << 8)));
+                    int sampleIndex = Math.Min(31, (int)(((time * freq) % 1.0) * 32.0));
+                    int nibble = (sampleIndex % 2 == 0) ? (WaveRam[sampleIndex / 2] >> 4) : (WaveRam[sampleIndex / 2] & 0x0F);
 
-                    // Channel 3 processes 32 samples per cycle, so the base frequency is different!
-                    double freq = 65536.0 / (2048 - rawFreq);
-                    double phase = (time * freq) % 1.0;
-
-                    // Map the 0.0 -> 1.0 phase to an index from 0 to 31
-                    int sampleIndex = (int)(phase * 32.0);
-                    if (sampleIndex > 31) sampleIndex = 31; // Safety check
-
-                    // Each byte in Wave RAM holds TWO 4-bit samples. 
-                    byte ramByte = WaveRam[sampleIndex / 2];
-
-                    // Even indexes use the upper 4 bits, odd indexes use the lower 4 bits
-                    int nibble = (sampleIndex % 2 == 0) ? (ramByte >> 4) : (ramByte & 0x0F);
-
-                    // Channel 3 Volume Shift (Bits 5-6 of NR32)
-                    // 00 = Mute, 01 = 100%, 10 = 50%, 11 = 25%
-                    int volumeCode = (NR32 >> 5) & 0x03;
-                    double ampMultiplier = 0.0;
-                    if (volumeCode == 1) ampMultiplier = 1.0;
-                    else if (volumeCode == 2) ampMultiplier = 0.5;
-                    else if (volumeCode == 3) ampMultiplier = 0.25;
-
-                    // Convert the 4-bit value (0 to 15) to an audio wave (-7.5 to +7.5) to center it
-                    double centeredSample = (nibble - 7.5) / 7.5;
-
-                    ch3Sample = (short)(centeredSample * ampMultiplier * 4000.0);
+                    int volCode = (NR32 >> 5) & 0x03;
+                    double ampMulti = volCode == 1 ? 1.0 : (volCode == 2 ? 0.5 : (volCode == 3 ? 0.25 : 0.0));
+                    ch3Sample = ((nibble - 7.5) / 7.5) * ampMulti * 8000.0;
                 }
-                // 3. Synthesize Channel 4 (Noise)
+
                 if (ch4IsPlaying && ch4CurrentVolume > 0)
                 {
                     double freq = GetNoiseFrequency();
-                    double timePerSample = 1.0 / SAMPLE_RATE;
-
                     ch4Time += timePerSample;
-
-                    // Has enough time passed to shift the LFSR?
                     if (ch4Time >= (1.0 / freq))
                     {
                         ch4Time -= (1.0 / freq);
-
-                        // LFSR Hardware Logic: XOR the bottom two bits
-                        int xorResult = (lfsr & 1) ^ ((lfsr >> 1) & 1);
-                        lfsr >>= 1; // Shift right
-                        lfsr |= (xorResult << 14); // Put the result in Bit 14
-
-                        // If Bit 3 of NR43 is set, it becomes a 7-bit LFSR (creates metallic/robotic sounds)
-                        if ((NR43 & 0x08) != 0)
-                        {
-                            lfsr &= ~0x40; // Clear Bit 6
-                            lfsr |= (xorResult << 6); // Put the result in Bit 6
-                        }
+                        int xor = (lfsr & 1) ^ ((lfsr >> 1) & 1);
+                        lfsr = (lfsr >> 1) | (xor << 14);
+                        if ((NR43 & 0x08) != 0) lfsr = (lfsr & ~0x40) | (xor << 6);
                     }
-
-                    // The output volume is based on the inverted 0th bit of the LFSR
-                    double amp4 = (ch4CurrentVolume / 15.0) * 4000.0;
-                    ch4Sample = (short)(((lfsr & 1) == 0) ? amp4 : -amp4);
+                    double amp = (ch4CurrentVolume / 15.0) * 8000.0;
+                    ch4Sample = ((lfsr & 1) == 0) ? amp : -amp;
                 }
 
-                // Mix all 4 channels together!
-                short mixedSample = (short)((ch1Sample + ch2Sample + ch3Sample + ch4Sample) / 2.0);
-                buffer[i * 2] = (byte)(mixedSample & 0xFF);
-                buffer[i * 2 + 1] = (byte)((mixedSample >> 8) & 0xFF);
+                // 2. Mix Stereo Output based on NR51 Panning
+                double leftMix = 0;
+                double rightMix = 0;
 
-                time += 1.0 / SAMPLE_RATE;
+                if ((NR51 & 0x10) != 0) leftMix += ch1Sample;
+                if ((NR51 & 0x20) != 0) leftMix += ch2Sample;
+                if ((NR51 & 0x40) != 0) leftMix += ch3Sample;
+                if ((NR51 & 0x80) != 0) leftMix += ch4Sample;
+
+                if ((NR51 & 0x01) != 0) rightMix += ch1Sample;
+                if ((NR51 & 0x02) != 0) rightMix += ch2Sample;
+                if ((NR51 & 0x04) != 0) rightMix += ch3Sample;
+                if ((NR51 & 0x08) != 0) rightMix += ch4Sample;
+
+                // 3. Apply Master Volume (NR50)
+                // Hardware volume scaling is: (Volume Register + 1) / 8
+                int leftVol = (NR50 >> 4) & 0x07;
+                int rightVol = NR50 & 0x07;
+
+                leftMix = (leftMix / 4.0) * ((leftVol + 1) / 8.0);
+                rightMix = (rightMix / 4.0) * ((rightVol + 1) / 8.0);
+
+                // 4. Convert and Write
+                short finalLeft = (short)leftMix;
+                short finalRight = (short)rightMix;
+
+                buffer[i * 4] = (byte)(finalLeft & 0xFF);
+                buffer[i * 4 + 1] = (byte)((finalLeft >> 8) & 0xFF);
+                buffer[i * 4 + 2] = (byte)(finalRight & 0xFF);
+                buffer[i * 4 + 3] = (byte)((finalRight >> 8) & 0xFF);
+
+                time += timePerSample;
             }
 
             waveProvider.AddSamples(buffer, 0, buffer.Length);

@@ -121,7 +121,11 @@ namespace GameboyTest
             // 8. I/O Registers
             // ... (your timer interceptions) ...
             // Tell the game engine: "Yes, the audio is turned on and ready to receive music!"
-            if (address == 0xFF26) return 0xF0;
+            // Inside MemoryBus.ReadByte
+            if (address >= 0xFF10 && address <= 0xFF3F)
+            {
+                return apu != null ? apu.ReadRegister(address) : (byte)0xFF;
+            }
             //if (address == 0xFF26) return (byte)(io[0x26] & 0xF0); Uncomment it for zelda seasons and ages and mickey mouse racing to work properly. Planning to add an APU.
             if (address == 0xFF68) return ppu.BCPS;
             if (address == 0xFF4F) return ppu.VBK;
@@ -215,49 +219,17 @@ namespace GameboyTest
             // --- APU SQUARE WAVE INTERCEPTS ---
             // Map both Ch1 and Ch2 into our single Square Wave generator for testing!
             // --- CHANNEL 3 ---
-            else if (address == 0xFF1A) apu.NR30 = value;
-            else if (address == 0xFF1B) apu.NR31 = value;
-            else if (address == 0xFF1C) apu.NR32 = value;
-            else if (address == 0xFF1D) apu.NR33 = value;
-            else if (address == 0xFF1E)
+            // Inside MemoryBus.WriteByte
+            if (address >= 0xFF10 && address <= 0xFF3F)
             {
-                apu.NR34 = value;
-                if ((value & 0x80) != 0) apu.TriggerChannel3();
+                if (apu != null) apu.WriteRegister(address, value);
+                return; // CRITICAL: Stop the MemoryBus from doing anything else!
             }
-            // --- WAVE RAM WRITES ---
-            else if (address >= 0xFF30 && address <= 0xFF3F)
-            {
-                apu.WaveRam[address - 0xFF30] = value;
-            }
-            // --- CHANNEL 1 ---
-            else if (address == 0xFF10) apu.NR10 = value;
-            else if (address == 0xFF11) apu.NR11 = value;
-            else if (address == 0xFF12) apu.NR12 = value;
-            else if (address == 0xFF13) apu.NR13 = value;
-            else if (address == 0xFF14)
-            {
-                apu.NR14 = value;
-                if ((value & 0x80) != 0) apu.TriggerChannel1();
-            }
-            // --- CHANNEL 2 ---
+
             // (No NR20 exists on real hardware!)
-            else if (address == 0xFF16) apu.NR21 = value;
-            else if (address == 0xFF17) apu.NR22 = value;
-            else if (address == 0xFF18) apu.NR23 = value;
-            else if (address == 0xFF19)
-            {
-                apu.NR24 = value;
-                if ((value & 0x80) != 0) apu.TriggerChannel2(); // (Your original trigger method)
-            }
+
             // --- CHANNEL 4 ---
-            else if (address == 0xFF20) apu.NR41 = value;
-            else if (address == 0xFF21) apu.NR42 = value;
-            else if (address == 0xFF22) apu.NR43 = value;
-            else if (address == 0xFF23)
-            {
-                apu.NR44 = value;
-                if ((value & 0x80) != 0) apu.TriggerChannel4();
-            }
+
             if (address == 0xFF00) { io[0] = (byte)(value|0xCF); return; }
             if (address == 0xFF07) {SystemTimer.TAC= value; return; }
             if (address == 0xFF05) { SystemTimer.TIMA = value; io[0x5] = value; return; }
