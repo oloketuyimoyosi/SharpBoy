@@ -53,14 +53,18 @@ namespace GameboyTest.NewFolder
         private bool ch4LengthEnabled = false;
         private int lfsr = 0x7FFF;
         private double ch4Time = 0;
-        private int ch3ReadCount = 0;
-        private byte ch3History1 = 0;
-        private byte ch3History2 = 0;
+
 
         private bool sweepNegateCalculated = false; // THE NEW FLAG
-                                                    // --- CHANNEL 3 STATE ---
+        private int ch3CorruptionOffset = 0;                                             // --- CHANNEL 3 STATE ---
         private bool waveSyncHack = false;
-
+        // --- NEW: Wave RAM Cycle Synchronization ---
+        private ulong globalApuCycles = 0;
+        private ulong lastRamReadCycle1 = 0;
+        private int lastRamReadIndex1 = 0;
+        private ulong lastRamReadCycle2 = 0;
+        private int lastRamReadIndex2 = 0;
+        private ulong lastCh3TriggerCycle = 0;
         // NEW: Real-Time Playhead Trackers
         private int ch3FreqTimer = 0;
         private int ch3WavePosition = 0;
@@ -95,15 +99,14 @@ namespace GameboyTest.NewFolder
             {
                 if (ch3IsPlaying && (NR30 & 0x80) != 0)
                 {
-                    if (ch3AccessedRAMThisCycle)
-                    {
-                        ch3AccessedRAMThisCycle = false;
-                        waveSyncHack = !waveSyncHack; // Alternate hit/miss
+                    // The CPU checks both, and if either matches a wave ram read, it reads that sample byte
+                    if (globalApuCycles == lastRamReadCycle1) return WaveRam[lastRamReadIndex1];
+                    if (globalApuCycles == lastRamReadCycle2) return WaveRam[lastRamReadIndex2];
 
-                        if (waveSyncHack) return WaveRam[ch3WavePosition / 2];
-                        else return 0xFF;
-                    }
-                    return 0xFF;
+                    // The Trigger Hack: Offset by 2 cycles
+                    if (globalApuCycles == lastCh3TriggerCycle + 2) return WaveRam[address - 0xFF30];
+
+                    return 0xFF; // Otherwise strictly blocked
                 }
                 return WaveRam[address - 0xFF30];
             }
@@ -286,6 +289,8 @@ namespace GameboyTest.NewFolder
                 case 0xFF1C: NR32 = value; break;
                 case 0xFF1D: NR33 = value; break;
                 // --- CHANNEL 3 TRIGGER ---
+                // --- CHANNEL 3 TRIGGER ---
+                // --- CHANNEL 3 TRIGGER ---
                 case 0xFF1E:
                     {
                         bool wasEnabled = (NR34 & 0x40) != 0;
@@ -301,9 +306,29 @@ namespace GameboyTest.NewFolder
 
                         if ((value & 0x80) != 0)
                         {
+                            // DMG HARDWARE BUG: Wave RAM Corruption!
+                            if (ch3IsPlaying && (NR30 & 0x80) != 0)
+                            {
+                                // THE FIX: Use the REAL playhead, allowing your CPU timing to dictate the hardware short!
+                                int currentByte = ch3WavePosition / 2;
+
+                                if (currentByte < 4)
+                                {
+                                    WaveRam[0] = WaveRam[currentByte];
+                                }
+                                else
+                                {
+                                    int bankStart = (currentByte / 4) * 4;
+                                    WaveRam[0] = WaveRam[bankStart + 0];
+                                    WaveRam[1] = WaveRam[bankStart + 1];
+                                    WaveRam[2] = WaveRam[bankStart + 2];
+                                    WaveRam[3] = WaveRam[bankStart + 3];
+                                }
+                            }
+
                             if (ch3LengthTimer == 0)
                             {
-                                ch3LengthTimer = 256; // REMEMBER: Channel 3 is 256, not 64!
+                                ch3LengthTimer = 256;
                                 if (nowEnabled && firstHalfOfPeriod) ch3LengthTimer--;
                             }
                             if ((NR30 & 0x80) != 0) TriggerChannel3();
@@ -354,15 +379,29 @@ namespace GameboyTest.NewFolder
                     {
                         if (ch3IsPlaying && (NR30 & 0x80) != 0)
                         {
-                            if (ch3AccessedRAMThisCycle)
+                            // The CPU checks both, and if either matches a wave ram read, it writes to that sample byte
+                            if (globalApuCycles == lastRamReadCycle1)
                             {
-                                ch3AccessedRAMThisCycle = false;
-                                waveSyncHack = !waveSyncHack; // Alternate hit/miss
-
-                                if (waveSyncHack) WaveRam[ch3WavePosition / 2] = value;
+                                WaveRam[lastRamReadIndex1] = value;
+                                return;
                             }
-                            return;
+                            if (globalApuCycles == lastRamReadCycle2)
+                            {
+                                WaveRam[lastRamReadIndex2] = value;
+                                return;
+                            }
+
+                            // The Trigger Hack: Offset by 2 cycles
+                            if (globalApuCycles == lastCh3TriggerCycle + 2)
+                            {
+                                WaveRam[address - 0xFF30] = value;
+                                return;
+                            }
+
+                            return; // Otherwise strictly blocked
                         }
+
+                        // Normal write when the channel is off
                         WaveRam[address - 0xFF30] = value;
                     }
                     break;
@@ -428,14 +467,18 @@ namespace GameboyTest.NewFolder
             }
             ch3IsPlaying = true;
 
-            // Reset the playhead and set the frequency timer!
             ch3WavePosition = 0;
             int rawFreq = NR33 | ((NR34 & 0x07) << 8);
-
-            // The Wave channel ticks every (2048 - Freq) * 2 APU cycles
             ch3FreqTimer = (2048 - rawFreq) * 2;
-        }
 
+            // --- THE TRIGGER HACK ---
+            // Record the exact cycle to offset tests later
+            lastCh3TriggerCycle = globalApuCycles;
+
+            // Reset the delay pipeline!
+
+            waveSyncHack = false;
+        }
         private void TriggerChannel4()
         {
             ch4IsPlaying = true;
@@ -452,38 +495,47 @@ namespace GameboyTest.NewFolder
 
         public void Tick(int cycles)
         {
-            apuCycles += cycles;
-
-            // 1. Slam the window shut at the start of every single CPU tick
-            ch3AccessedRAMThisCycle = false;
-
-            // --- Channel 3 Real-Time Playhead ---
-            if (ch3IsPlaying && (NR30 & 0x80) != 0)
+            // The Insight: The APU updates in 2-cycle increments!
+            for (int i = 0; i < cycles; i += 2)
             {
-                ch3FreqTimer -= cycles;
-                while (ch3FreqTimer <= 0)
+                globalApuCycles += 2;
+                apuCycles += 2;
+
+                ch3AccessedRAMThisCycle = false;
+
+                // --- Channel 3 Real-Time Playhead ---
+                if (ch3IsPlaying && (NR30 & 0x80) != 0)
                 {
-                    int rawFreq = NR33 | ((NR34 & 0x07) << 8);
-                    ch3FreqTimer += (2048 - rawFreq) * 2;
+                    ch3FreqTimer -= 2; // Tick down by 2 instead of the whole block
+                    if (ch3FreqTimer <= 0)
+                    {
+                        int rawFreq = NR33 | ((NR34 & 0x07) << 8);
+                        ch3FreqTimer += (2048 - rawFreq) * 2;
 
-                    ch3WavePosition = (ch3WavePosition + 1) % 32;
+                        ch3WavePosition = (ch3WavePosition + 1) % 32;
 
-                    // 1. DMG actually fetches on EVERY sample!
-                    ch3AccessedRAMThisCycle = true;
+                        // Shift history: store the last two samples read and their exact cycle count
+                        lastRamReadCycle2 = lastRamReadCycle1;
+                        lastRamReadIndex2 = lastRamReadIndex1;
+
+                        lastRamReadCycle1 = globalApuCycles;
+                        lastRamReadIndex1 = ch3WavePosition / 2;
+
+                        ch3AccessedRAMThisCycle = true;
+                    }
+                }
+
+                if (apuCycles >= 8192)
+                {
+                    apuCycles -= 8192;
+                    frameSequencerStep = (frameSequencerStep + 1) % 8;
+
+                    if (frameSequencerStep % 2 == 0) StepLengthCounter();
+                    if (frameSequencerStep == 2 || frameSequencerStep == 6) StepSweep();
+                    if (frameSequencerStep == 7) StepVolumeEnvelope();
                 }
             }
-            if (apuCycles >= 8192)
-            {
-                apuCycles -= 8192;
-                frameSequencerStep = (frameSequencerStep + 1) % 8; // <--- The Increment!
-
-
-                if (frameSequencerStep % 2 == 0) StepLengthCounter();
-                if (frameSequencerStep == 2 || frameSequencerStep == 6) StepSweep();
-                if (frameSequencerStep == 7) StepVolumeEnvelope();
-            }
         }
-
         private void StepLengthCounter()
         {
             if (((NR14 & 0x40) != 0) && ch1LengthTimer > 0 && --ch1LengthTimer == 0) ch1IsPlaying = false;
