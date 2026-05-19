@@ -20,7 +20,20 @@ namespace GameboyTest.NewFolder
 
         // --- MASTER CONTROL REGISTERS (STEREO & POWER) ---
         public byte NR50, NR51, NR52;
+        private static readonly int[,] DutyTable = new int[4, 8] {
+    { 0, 0, 0, 0, 0, 0, 0, 1 }, // 12.5%
+    { 0, 0, 0, 0, 0, 0, 1, 1 }, // 25%
+    { 0, 0, 0, 0, 1, 1, 1, 1 }, // 50%
+    { 1, 1, 1, 1, 1, 1, 0, 0 }  // 75%
+};
 
+        private int ch1FreqTimer = 0;
+        private int ch1WavePosition = 0;
+
+        private int ch2FreqTimer = 0;
+        private int ch2WavePosition = 0;
+
+        private int ch4FreqTimer = 0;
         // --- CHANNEL REGISTERS & STATE ---
         public byte NR10, NR11, NR12, NR13, NR14;
         public bool ch1IsPlaying = false;
@@ -54,7 +67,8 @@ namespace GameboyTest.NewFolder
         private int lfsr = 0x7FFF;
         private double ch4Time = 0;
 
-
+        private int downsampleCounter = 0;
+        private List<byte> sampleBuffer = new List<byte>(4096);
         private bool sweepNegateCalculated = false; // THE NEW FLAG
         private int ch3CorruptionOffset = 0;                                             // --- CHANNEL 3 STATE ---
         private bool waveSyncHack = false;
@@ -502,7 +516,28 @@ namespace GameboyTest.NewFolder
                 apuCycles += 2;
 
                 ch3AccessedRAMThisCycle = false;
+                if (ch1IsPlaying)
+                {
+                    ch1FreqTimer -= 2;
+                    if (ch1FreqTimer <= 0)
+                    {
+                        int rawFreq = NR13 | ((NR14 & 0x07) << 8);
+                        ch1FreqTimer += (2048 - rawFreq) * 4;
+                        ch1WavePosition = (ch1WavePosition + 1) % 8;
+                    }
+                }
 
+                // --- CHANNEL 2 ---
+                if (ch2IsPlaying)
+                {
+                    ch2FreqTimer -= 2;
+                    if (ch2FreqTimer <= 0)
+                    {
+                        int rawFreq = NR23 | ((NR24 & 0x07) << 8);
+                        ch2FreqTimer += (2048 - rawFreq) * 4;
+                        ch2WavePosition = (ch2WavePosition + 1) % 8;
+                    }
+                }
                 // --- Channel 3 Real-Time Playhead ---
                 if (ch3IsPlaying && (NR30 & 0x80) != 0)
                 {
@@ -524,7 +559,25 @@ namespace GameboyTest.NewFolder
                         ch3AccessedRAMThisCycle = true;
                     }
                 }
+                // --- CHANNEL 4 (NOISE) ---
+                if (ch4IsPlaying)
+                {
+                    ch4FreqTimer -= 2;
+                    if (ch4FreqTimer <= 0)
+                    {
+                        int[] divisors = { 8, 16, 32, 48, 64, 80, 96, 112 };
+                        int clockShift = (NR43 >> 4) & 0x0F;
+                        int baseDivisor = divisors[NR43 & 0x07];
 
+                        // Reload the timer using the noise hardware formula
+                        ch4FreqTimer += (baseDivisor << clockShift);
+
+                        // Step the LFSR
+                        int xor = (lfsr & 1) ^ ((lfsr >> 1) & 1);
+                        lfsr = (lfsr >> 1) | (xor << 14);
+                        if ((NR43 & 0x08) != 0) lfsr = (lfsr & ~0x40) | (xor << 6);
+                    }
+                }
                 if (apuCycles >= 8192)
                 {
                     apuCycles -= 8192;
@@ -533,6 +586,12 @@ namespace GameboyTest.NewFolder
                     if (frameSequencerStep % 2 == 0) StepLengthCounter();
                     if (frameSequencerStep == 2 || frameSequencerStep == 6) StepSweep();
                     if (frameSequencerStep == 7) StepVolumeEnvelope();
+                }
+                downsampleCounter += SAMPLE_RATE;
+                if (downsampleCounter >= 2097152)
+                {
+                    downsampleCounter -= 2097152;
+                    SampleCurrentState();
                 }
             }
         }
@@ -639,98 +698,85 @@ namespace GameboyTest.NewFolder
             return 4194304.0 / (baseDivisor << clockShift);
         }
 
-        public void ProcessAudio()
+        private void SampleCurrentState()
         {
-            if (waveProvider.BufferedBytes > SAMPLE_RATE) return;
+            double ch1Sample = 0;
+            double ch2Sample = 0;
+            double ch3Sample = 0;
+            double ch4Sample = 0;
 
-            int samplesToGenerate = SAMPLE_RATE / 60;
-            // 4 bytes per stereo sample (2 bytes Left, 2 bytes Right)
-            byte[] buffer = new byte[samplesToGenerate * 4];
-            double timePerSample = 1.0 / SAMPLE_RATE;
-
-            for (int i = 0; i < samplesToGenerate; i++)
+            // 1. Read Current Hardware State
+            if (ch1IsPlaying && ch1CurrentVolume > 0)
             {
-                double ch1Sample = 0;
-                double ch2Sample = 0;
-                double ch3Sample = 0;
-                double ch4Sample = 0;
-
-                // 1. Synthesize Waveforms
-                if (ch1IsPlaying && ch1CurrentVolume > 0)
-                {
-                    double freq = 131072.0 / (2048 - (NR13 | ((NR14 & 0x07) << 8)));
-                    double amp = (ch1CurrentVolume / 15.0) * 8000.0;
-                    ch1Sample = ((time * freq) % 1.0) < GetDutyThreshold(NR11) ? amp : -amp;
-                }
-
-                if (ch2IsPlaying && ch2CurrentVolume > 0)
-                {
-                    double freq = 131072.0 / (2048 - (NR23 | ((NR24 & 0x07) << 8)));
-                    double amp = (ch2CurrentVolume / 15.0) * 8000.0;
-                    ch2Sample = ((time * freq) % 1.0) < GetDutyThreshold(NR21) ? amp : -amp;
-                }
-
-                if (ch3IsPlaying && (NR30 & 0x80) != 0)
-                {
-                    double freq = 65536.0 / (2048 - (NR33 | ((NR34 & 0x07) << 8)));
-                    int sampleIndex = Math.Min(31, (int)(((time * freq) % 1.0) * 32.0));
-                    int nibble = (sampleIndex % 2 == 0) ? (WaveRam[sampleIndex / 2] >> 4) : (WaveRam[sampleIndex / 2] & 0x0F);
-
-                    int volCode = (NR32 >> 5) & 0x03;
-                    double ampMulti = volCode == 1 ? 1.0 : (volCode == 2 ? 0.5 : (volCode == 3 ? 0.25 : 0.0));
-                    ch3Sample = ((nibble - 7.5) / 7.5) * ampMulti * 8000.0;
-                }
-
-                if (ch4IsPlaying && ch4CurrentVolume > 0)
-                {
-                    double freq = GetNoiseFrequency();
-                    ch4Time += timePerSample;
-                    if (ch4Time >= (1.0 / freq))
-                    {
-                        ch4Time -= (1.0 / freq);
-                        int xor = (lfsr & 1) ^ ((lfsr >> 1) & 1);
-                        lfsr = (lfsr >> 1) | (xor << 14);
-                        if ((NR43 & 0x08) != 0) lfsr = (lfsr & ~0x40) | (xor << 6);
-                    }
-                    double amp = (ch4CurrentVolume / 15.0) * 8000.0;
-                    ch4Sample = ((lfsr & 1) == 0) ? amp : -amp;
-                }
-
-                // 2. Mix Stereo Output based on NR51 Panning
-                double leftMix = 0;
-                double rightMix = 0;
-
-                if ((NR51 & 0x10) != 0) leftMix += ch1Sample;
-                if ((NR51 & 0x20) != 0) leftMix += ch2Sample;
-                if ((NR51 & 0x40) != 0) leftMix += ch3Sample;
-                if ((NR51 & 0x80) != 0) leftMix += ch4Sample;
-
-                if ((NR51 & 0x01) != 0) rightMix += ch1Sample;
-                if ((NR51 & 0x02) != 0) rightMix += ch2Sample;
-                if ((NR51 & 0x04) != 0) rightMix += ch3Sample;
-                if ((NR51 & 0x08) != 0) rightMix += ch4Sample;
-
-                // 3. Apply Master Volume (NR50)
-                // Hardware volume scaling is: (Volume Register + 1) / 8
-                int leftVol = (NR50 >> 4) & 0x07;
-                int rightVol = NR50 & 0x07;
-
-                leftMix = (leftMix / 4.0) * ((leftVol + 1) / 8.0);
-                rightMix = (rightMix / 4.0) * ((rightVol + 1) / 8.0);
-
-                // 4. Convert and Write
-                short finalLeft = (short)leftMix;
-                short finalRight = (short)rightMix;
-
-                buffer[i * 4] = (byte)(finalLeft & 0xFF);
-                buffer[i * 4 + 1] = (byte)((finalLeft >> 8) & 0xFF);
-                buffer[i * 4 + 2] = (byte)(finalRight & 0xFF);
-                buffer[i * 4 + 3] = (byte)((finalRight >> 8) & 0xFF);
-
-                time += timePerSample;
+                int pattern = (NR11 >> 6) & 0x03;
+                int bit = DutyTable[pattern, ch1WavePosition];
+                ch1Sample = (((bit * ch1CurrentVolume) / 7.5) - 1.0) * 8000.0;
             }
 
-            waveProvider.AddSamples(buffer, 0, buffer.Length);
+            if (ch2IsPlaying && ch2CurrentVolume > 0)
+            {
+                int pattern = (NR21 >> 6) & 0x03;
+                int bit = DutyTable[pattern, ch2WavePosition];
+                ch2Sample = (((bit * ch2CurrentVolume) / 7.5) - 1.0) * 8000.0;
+            }
+
+            if (ch3IsPlaying && (NR30 & 0x80) != 0)
+            {
+                int nibble = (ch3WavePosition % 2 == 0) ? (WaveRam[ch3WavePosition / 2] >> 4) : (WaveRam[ch3WavePosition / 2] & 0x0F);
+                int volCode = (NR32 >> 5) & 0x03;
+                int shiftedNibble = volCode == 0 ? 0 : (nibble >> (volCode - 1));
+                ch3Sample = ((shiftedNibble / 7.5) - 1.0) * 8000.0;
+            }
+
+            if (ch4IsPlaying && ch4CurrentVolume > 0)
+            {
+                int bit = ((lfsr & 1) == 0) ? 1 : 0;
+                ch4Sample = (((bit * ch4CurrentVolume) / 7.5) - 1.0) * 8000.0;
+            }
+
+            // 2. Mix Stereo Output based on NR51 Panning
+            double leftMix = 0, rightMix = 0;
+
+            if ((NR51 & 0x10) != 0) leftMix += ch1Sample;
+            if ((NR51 & 0x20) != 0) leftMix += ch2Sample;
+            if ((NR51 & 0x40) != 0) leftMix += ch3Sample;
+            if ((NR51 & 0x80) != 0) leftMix += ch4Sample;
+
+            if ((NR51 & 0x01) != 0) rightMix += ch1Sample;
+            if ((NR51 & 0x02) != 0) rightMix += ch2Sample;
+            if ((NR51 & 0x04) != 0) rightMix += ch3Sample;
+            if ((NR51 & 0x08) != 0) rightMix += ch4Sample;
+
+            // 3. Apply Master Volume (NR50)
+            int leftVol = (NR50 >> 4) & 0x07;
+            int rightVol = NR50 & 0x07;
+
+            leftMix = (leftMix / 4.0) * ((leftVol + 1) / 8.0);
+            rightMix = (rightMix / 4.0) * ((rightVol + 1) / 8.0);
+
+            // 4. Convert and Queue
+            short finalLeft = (short)leftMix;
+            short finalRight = (short)rightMix;
+
+            sampleBuffer.Add((byte)(finalLeft & 0xFF));
+            sampleBuffer.Add((byte)((finalLeft >> 8) & 0xFF));
+            sampleBuffer.Add((byte)(finalRight & 0xFF));
+            sampleBuffer.Add((byte)((finalRight >> 8) & 0xFF));
+
+            // 5. Push to NAudio when we hit 1/60th of a second
+            if (sampleBuffer.Count >= (SAMPLE_RATE / 60) * 4)
+            {
+                if (waveProvider.BufferedBytes < waveProvider.BufferLength)
+                {
+                    waveProvider.AddSamples(sampleBuffer.ToArray(), 0, sampleBuffer.Count);
+                }
+                sampleBuffer.Clear();
+            }
+        }
+
+        // Leave this empty so CPU.cs can safely call it without doing damage!
+        public void ProcessAudio()
+        {
         }
     }
 }

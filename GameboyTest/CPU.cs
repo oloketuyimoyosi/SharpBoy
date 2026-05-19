@@ -248,10 +248,12 @@ namespace GameboyTest
         }
 
         // New helper for writing to memory
+        // New helper for writing to memory
         private void WriteMemory(ushort address, byte value)
         {
             Tick();
             bus.WriteByte(address, value);
+
             if (address == 0xFF46)
             {
                 bus.oam_switch = false;
@@ -259,6 +261,30 @@ namespace GameboyTest
                 bus.oam_switch = true;
             }
 
+            // --- THE GHOST DMA (VRAM) ---
+            if (GBC_ON && address == 0xFF55)
+            {
+                bool isHDMA = (value & 0x80) != 0;
+
+                // We only need to ghost General Purpose DMA (GDMA). 
+                // GDMA halts the CPU instantly to move massive chunks of data, 
+                // which would cause massive audio desyncs if ignored.
+                if (!isHDMA)
+                {
+                    // The lower 7 bits dictate the length: (blocks + 1) * 16 bytes
+                    int blocks = (value & 0x7F) + 1;
+
+                    // Hardware Timing: 1 block (16 bytes) takes roughly 32 T-Cycles.
+                    // Because your Tick() method advances the system by 4 T-Cycles, 
+                    // we just need to fire it 8 times per block.
+                    int ticksRequired = blocks * 8;
+
+                    for (int i = 0; i < ticksRequired; i++)
+                    {
+                        Tick();
+                    }
+                }
+            }
         }
         private void CheckInterrupts()
         {
