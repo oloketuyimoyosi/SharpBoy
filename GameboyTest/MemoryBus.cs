@@ -10,6 +10,7 @@ namespace GameboyTest
         public Timer SystemTimer { get; private set; }
         public PPU ppu { get; private set; }
         public APU apu { get; private set; }
+        public Joypad joypad;
         private byte OAM_COUNTER = 0;
         public enum InterruptType
         {
@@ -52,6 +53,7 @@ namespace GameboyTest
             SystemTimer = new Timer(RequestTimerInterrupt);
             ppu = new PPU(RequestLcdInterrupt, RequestVBlankInterrupt, renderCallback, io,PerformHdmaBlock);
             apu = new APU();
+            joypad = new Joypad(this);
             InitializeHardwareRegisters();
         }
 
@@ -112,6 +114,7 @@ namespace GameboyTest
             {
                 return oam_store;
             }
+            if (address == 0xFF00) { return joypad.ReadRegister(); }
             // 8. I/O Registers (Joypad, Timers, Audio, LCD)
             if (address == 0xFF07) {return  ((byte)((SystemTimer.TAC)|(0xf8))); }
 
@@ -230,7 +233,12 @@ namespace GameboyTest
 
             // --- CHANNEL 4 ---
 
-            if (address == 0xFF00) { io[0] = (byte)(value|0xCF); return; }
+            if (address == 0xFF00) { 
+
+                    joypad.WriteRegister(value); 
+
+                    return; 
+            }
             if (address == 0xFF07) {SystemTimer.TAC= value; return; }
             if (address == 0xFF05) { SystemTimer.TIMA = value; io[0x5] = value; return; }
             if (address == 0xFF06) { SystemTimer.TMA = value; return; }

@@ -16,12 +16,17 @@ namespace GameboyTest
         CPU cpu;
         private bool isRunning = false;
         private System.Threading.Tasks.Task emulatorTask;
+        // Standard DMG executes ~70224 T-Cycles per frame (4.19 MHz / 59.73 Hz)
+        private const int CYCLES_PER_FRAME_DMG = 70224;
 
+        // GBC Double Speed executes exactly twice as many cycles per frame
+        private const int CYCLES_PER_FRAME_GBC = 140448;
         public Form1()
         {
             InitializeComponent();
             this.Text = "Game Boy Emulator";
             this.ClientSize = new Size(480, 432);
+            this.KeyPreview = true;
         }
 
         private void Form1_Load(object sender, EventArgs e)
@@ -90,6 +95,55 @@ namespace GameboyTest
         }
 
         // --- EVENT HANDLERS ---
+        // Use Arrow Keys for D-Pad, Z for A, X for B, Enter for Start, Shift for Select
+        // 1. THIS REPLACES OnKeyDown! It stops Windows from stealing the arrow keys.
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (bus?.joypad == null) return base.ProcessCmdKey(ref msg, keyData);
+
+            bool handled = true;
+            switch (keyData)
+            {
+                case Keys.Right: bus.joypad.PressButton(JoypadButton.Right); break;
+                case Keys.Left: bus.joypad.PressButton(JoypadButton.Left); break;
+                case Keys.Up: bus.joypad.PressButton(JoypadButton.Up); break;
+                case Keys.Down: bus.joypad.PressButton(JoypadButton.Down); break;
+                case Keys.Z: bus.joypad.PressButton(JoypadButton.A); break;
+                case Keys.X: bus.joypad.PressButton(JoypadButton.B); break;
+                case Keys.Enter: bus.joypad.PressButton(JoypadButton.Start); break;
+                case Keys.Shift:
+                case Keys.Space:
+                    bus.joypad.PressButton(JoypadButton.Select); break;
+                default:
+                    handled = false; // Not a Game Boy button, let Windows handle it
+                    break;
+            }
+
+            // If we handled it, return true to KILL the key press so the MenuStrip ignores it!
+            if (handled) return true;
+
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        // 2. KEEP your OnKeyUp exactly as it is! Windows does not steal KeyUp events.
+        protected override void OnKeyUp(KeyEventArgs e)
+        {
+            if (bus?.joypad == null) return;
+
+            switch (e.KeyCode)
+            {
+                case Keys.Right: bus.joypad.ReleaseButton(JoypadButton.Right); break;
+                case Keys.Left: bus.joypad.ReleaseButton(JoypadButton.Left); break;
+                case Keys.Up: bus.joypad.ReleaseButton(JoypadButton.Up); break;
+                case Keys.Down: bus.joypad.ReleaseButton(JoypadButton.Down); break;
+                case Keys.Z: bus.joypad.ReleaseButton(JoypadButton.A); break;
+                case Keys.X: bus.joypad.ReleaseButton(JoypadButton.B); break;
+                case Keys.Enter: bus.joypad.ReleaseButton(JoypadButton.Start); break;
+                case Keys.Shift:
+                case Keys.Space:
+                    bus.joypad.ReleaseButton(JoypadButton.Select); break;
+            }
+        }
         private void ViewMemory_Click(object sender, EventArgs e)
         {
             // Prevent opening the debugger if no game is loaded
@@ -570,17 +624,38 @@ namespace GameboyTest
         }
         private void RunEmulatorEngine()
         {
-            // The Game Boy processes exactly 70,224 T-Cycles per 60Hz frame.
-            // Eventually, we will track cycles here to sync the video and audio.
+// The authentic Game Boy refresh rate is 59.73 Hz.
+            // 1000 ms / 59.73 frames = ~16.742 milliseconds per frame.
+            double targetFrameTimeMs = 1000.0 / 59.73;
+            
+            System.Diagnostics.Stopwatch frameTimer = new System.Diagnostics.Stopwatch();
 
             while (isRunning)
             {
-                // 1. Execute the next instruction
-                cpu.Step();
+                frameTimer.Restart();
 
-                // 2. (Future) If 70,224 cycles have passed:
-                //    - Tell SkiaSharp to draw the screen
-                //    - Thread.Sleep() to lock the speed to 60 FPS
+                // 1. DETERMINE TARGET SPEED
+                bool runAsGbc = activeCartridge.ColorMode == GbcMode.CgbSupported || activeCartridge.ColorMode == GbcMode.CgbExclusive;
+                bool isDoubleSpeed = runAsGbc && (bus.KEY1 & 0x80) != 0; 
+                int targetCycles = isDoubleSpeed ? CYCLES_PER_FRAME_GBC : CYCLES_PER_FRAME_DMG;
+
+                // 2. EXECUTE EXACTLY ONE FRAME
+                ulong startingCycles = cpu.TotalClockCycles;
+                ulong cyclesExecuted = 0;
+
+                while (isRunning && cyclesExecuted < (ulong)targetCycles)
+                {
+                    cpu.Step();
+                    cyclesExecuted = cpu.TotalClockCycles - startingCycles;
+                }
+
+                // 3. THE HIGH-RESOLUTION SPEED LIMITER
+                // We use SpinWait instead of Thread.Sleep. This keeps the thread awake and 
+                // perfectly synced to the microsecond, preventing the OS from pausing our emulator.
+                while (frameTimer.Elapsed.TotalMilliseconds < targetFrameTimeMs)
+                {
+                    System.Threading.Thread.SpinWait(10); 
+                }
             }
         }
         private void OnFrameReadyToDraw()
