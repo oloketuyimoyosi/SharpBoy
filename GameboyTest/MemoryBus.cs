@@ -47,13 +47,15 @@ namespace GameboyTest
         // --- GBC SPEED SWITCH REGISTER ---
         // 0xFF4D (KEY1). Default is 0x7E (Normal speed, bits 1-6 are always 1)
         public byte KEY1 = 0x7E;
-        public MemoryBus(IMbc activeMbc, Action renderCallback)
+        public MemoryBus(IMbc activeMbc, Action renderCallback) // <-- Added 'isGbc' here
         {
             this.mbc = activeMbc;
             SystemTimer = new Timer(RequestTimerInterrupt);
-            ppu = new PPU(RequestLcdInterrupt, RequestVBlankInterrupt, renderCallback, io,PerformHdmaBlock);
+            ppu = new PPU(RequestLcdInterrupt, RequestVBlankInterrupt, renderCallback, io, PerformHdmaBlock);
             apu = new APU();
             joypad = new Joypad(this);
+
+            // 2. Pass the flag into your new initialization method!
             InitializeHardwareRegisters();
         }
 
@@ -308,7 +310,6 @@ namespace GameboyTest
         }
         private void InitializeHardwareRegisters()
         {
-            // --- JOYPAD ---
             InitIO(0xFF00, 0xCF); // P1 (Joypad state)
 
             // --- SERIAL TRANSFER (Link Cable) ---
@@ -372,7 +373,7 @@ namespace GameboyTest
             InitIO(0xFF4F, 0xFE); // VBK (VRAM Bank) defaults to Bank 0
             InitIO(0xFF70, 0xF9); // SVBK (WRAM Bank) defaults to Bank 1
             // --- MISCELLANEOUS ---
-            InitIO(0xFF50, 0x01); // Bootrom Disable (Setting this to 1 hides the Nintendo logo memory)
+            InitIO(0xFF50, 0x01);
         }
         private void RequestTimerInterrupt()
         {

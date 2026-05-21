@@ -85,6 +85,7 @@ namespace GameboyTest.NewFolder
         private double hpfRight = 0;
         private double lastLeftMix = 0;
         private double lastRightMix = 0;
+        public bool IsGbc = false; // Add this!
         public APU()
         {
             var waveFormat = new WaveFormat(SAMPLE_RATE, 16, 2);
@@ -176,14 +177,19 @@ namespace GameboyTest.NewFolder
                 }
                 return;
             }
-
             if ((NR52 & 0x80) == 0)
             {
-                if (address == 0xFF11) { NR11 = (byte)(value & 0x3F); ch1LengthTimer = 64 - (value & 0x3F); }
-                else if (address == 0xFF16) { NR21 = (byte)(value & 0x3F); ch2LengthTimer = 64 - (value & 0x3F); }
-                else if (address == 0xFF1B) { NR31 = value; ch3LengthTimer = 256 - value; }
-                else if (address == 0xFF20) { NR41 = (byte)(value & 0x3F); ch4LengthTimer = 64 - (value & 0x3F); }
-                else if (address >= 0xFF30 && address <= 0xFF3F) WaveRam[address - 0xFF30] = value;
+                if (!IsGbc)
+                {
+                    // DMG allows writing to length counters even while the APU is powered off
+                    if (address == 0xFF11) { NR11 = (byte)(value & 0x3F); ch1LengthTimer = 64 - (value & 0x3F); }
+                    else if (address == 0xFF16) { NR21 = (byte)(value & 0x3F); ch2LengthTimer = 64 - (value & 0x3F); }
+                    else if (address == 0xFF1B) { NR31 = value; ch3LengthTimer = 256 - value; }
+                    else if (address == 0xFF20) { NR41 = (byte)(value & 0x3F); ch4LengthTimer = 64 - (value & 0x3F); }
+                }
+
+                // Wave RAM can always be accessed when powered off on both systems
+                if (address >= 0xFF30 && address <= 0xFF3F) WaveRam[address - 0xFF30] = value;
                 return;
             }
 
@@ -368,7 +374,6 @@ namespace GameboyTest.NewFolder
                     break;
             }
         }
-
         private void PowerOff()
         {
             NR10 = 0;
@@ -378,9 +383,27 @@ namespace GameboyTest.NewFolder
             NR42 = NR43 = NR44 = 0;
             NR50 = NR51 = 0;
 
-            NR11 &= 0x3F;
-            NR21 &= 0x3F;
-            NR41 &= 0x3F;
+            if (IsGbc)
+            {
+                // CGB violently resets the length registers to 0 on power down
+                NR11 = 0;
+                NR21 = 0;
+                NR31 = 0;
+                NR41 = 0;
+
+                ch1LengthTimer = 0;
+                ch2LengthTimer = 0;
+                ch3LengthTimer = 0;
+                ch4LengthTimer = 0;
+            }
+            else
+            {
+                // DMG preserves the lower 6 bits (the length data)
+                NR11 &= 0x3F;
+                NR21 &= 0x3F;
+                NR41 &= 0x3F;
+                // NR31 is completely preserved on DMG
+            }
 
             ch1IsPlaying = ch2IsPlaying = ch3IsPlaying = ch4IsPlaying = false;
         }

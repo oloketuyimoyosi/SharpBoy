@@ -212,16 +212,18 @@ namespace GameboyTest
 
                             // ... your MBC routing logic ...
 
-                            bus = new MemoryBus(activeMbc, OnFrameReadyToDraw);
+                            
                             bool runAsGbc = activeCartridge.ColorMode == GbcMode.CgbSupported || activeCartridge.ColorMode == GbcMode.CgbExclusive;
-
+                            bus = new MemoryBus(activeMbc, OnFrameReadyToDraw);
                             if (runAsGbc)
                             {
                                 bus.ppu.IsGbc = true;
+                                bus.apu.IsGbc = true;
                                 
                             }
                             // Pass it to your CPU (you'll need to update your CPU constructor to accept/pass this down)
                             cpu = new CPU(bus, runAsGbc);
+                            cpu.AF = (ushort)((runAsGbc ? 0x1100 : 0x0100) | (cpu.AF & 0x00FF));
                             APU testApu = new APU();
                             
                             // START THE LOGGER HERE!
