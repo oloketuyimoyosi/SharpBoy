@@ -16,6 +16,7 @@ namespace GameboyTest
         CPU cpu;
         private bool isRunning = false;
         private System.Threading.Tasks.Task emulatorTask;
+        private bool useLcdFilter = false;
         // Standard DMG executes ~70224 T-Cycles per frame (4.19 MHz / 59.73 Hz)
         private const int CYCLES_PER_FRAME_DMG = 70224;
 
@@ -77,6 +78,22 @@ namespace GameboyTest
             // Add both main menus to the top bar
             menuStrip.Items.Add(fileMenu);
             menuStrip.Items.Add(debugMenu);
+
+
+            // --- NEW: Add the Options Menu for the Filter ---
+            ToolStripMenuItem optionsMenu = new ToolStripMenuItem("Options");
+            ToolStripMenuItem lcdFilterItem = new ToolStripMenuItem("LCD Screen Filter");
+            lcdFilterItem.CheckOnClick = true; // Makes it act like a checkbox
+            lcdFilterItem.Checked = false;     // Default to OFF (Crisp pixels)
+            lcdFilterItem.CheckedChanged += (s, ev) =>
+            {
+                useLcdFilter = lcdFilterItem.Checked;
+            };
+            optionsMenu.DropDownItems.Add(lcdFilterItem);
+
+            // Add all main menus to the top bar
+
+            menuStrip.Items.Add(optionsMenu);
 
             // Attach the menu to the window
             this.MainMenuStrip = menuStrip;
@@ -714,11 +731,66 @@ namespace GameboyTest
                     using (SKBitmap bitmap = new SKBitmap())
                     {
                         bitmap.InstallPixels(info, pointer, info.RowBytes, delegate { }, null);
-
                         using (SKPaint paint = new SKPaint { FilterQuality = SKFilterQuality.None, IsAntialias = false })
                         {
+                            if (useLcdFilter)
+                            {
+                                // 1. AUTHENTIC TFT COLOR MATRIX (Color Bleed & Desaturation)
+                                // This physically shifts pure sRGB colors into the washed-out GBC spectrum.
+                                float[] gbcColorMatrix = new float[]
+                                {
+                                    0.75f, 0.15f, 0.05f, 0, 0,  // Red channel bleeds into Green
+                                    0.15f, 0.65f, 0.15f, 0, 0,  // Green channel dominates
+                                    0.05f, 0.15f, 0.65f, 0, 0,  // Blue channel bleeds into Green
+                                    0,     0,     0,     1, 0   // Alpha remains untouched
+                                };
+
+                                paint.ColorFilter = SKColorFilter.CreateColorMatrix(gbcColorMatrix);
+                                paint.ImageFilter = SKImageFilter.CreateBlur(0.4f, 0.4f); // Subtle LCD ghosting
+                            }
+
                             SKRect destinationRect = e.Info.Rect;
                             canvas.DrawBitmap(bitmap, destinationRect, paint);
+
+                            if (useLcdFilter)
+                            {
+                                float scaleX = destinationRect.Width / 160f;
+                                float scaleY = destinationRect.Height / 144f;
+
+                                if (scaleX >= 2 && scaleY >= 2)
+                                {
+                                    // 2. THE SHADOW MASK (Multiply Blend Mode)
+                                    // Instead of generic black lines, Multiply mode organically darkens the 
+                                    // exact color beneath it, perfectly mimicking physical crystal gaps.
+                                    using (SKPaint gridPaint = new SKPaint
+                                    {
+                                        Color = new SKColor(0, 0, 0, 75),
+                                        StrokeWidth = 1,
+                                        BlendMode = SKBlendMode.Multiply
+                                    })
+                                    {
+                                        for (int x = 0; x <= 160; x++)
+                                            canvas.DrawLine(x * scaleX, 0, x * scaleX, destinationRect.Height, gridPaint);
+
+                                        for (int y = 0; y <= 144; y++)
+                                            canvas.DrawLine(0, y * scaleY, destinationRect.Width, y * scaleY, gridPaint);
+                                    }
+
+                                    // 3. THE "UNLIT" GLASS VIGNETTE
+                                    // Simulates the natural darkness at the edges of the unlit plastic screen.
+                                    using (SKPaint vignettePaint = new SKPaint())
+                                    {
+                                        vignettePaint.Shader = SKShader.CreateRadialGradient(
+                                            new SKPoint(destinationRect.Width / 2, destinationRect.Height / 2),
+                                            Math.Max(destinationRect.Width, destinationRect.Height) / 1.3f,
+                                            new SKColor[] { new SKColor(255, 255, 255, 0), new SKColor(0, 0, 0, 90) },
+                                            new float[] { 0.4f, 1.0f },
+                                            SKShaderTileMode.Clamp);
+
+                                        canvas.DrawRect(destinationRect, vignettePaint);
+                                    }
+                                }
+                            }
                         }
                     }
                 }

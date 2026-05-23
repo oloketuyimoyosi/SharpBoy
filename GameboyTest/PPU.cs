@@ -108,7 +108,7 @@ namespace GameboyTest
         }   // 0xFF4A
         public byte WX
         {
-            get => (byte)(io[0x4B] - 7); // 0xFF4B
+            get => (byte)(io[0x4B]); // 0xFF4B
             set => io[0x4B] = value;
         }
         public byte BGP
@@ -206,17 +206,18 @@ namespace GameboyTest
             }
 
             // If we finished a full horizontal line...
+            // If we finished a full horizontal line...
             if ((scanlineCounter <= 0))
             {
-                scanlineCounter += SCANLINE_CYCLES; // Use += to perfectly preserve leftover cycles
+                scanlineCounter += SCANLINE_CYCLES;
                 tick = false;
 
                 if (isLine153)
                 {
-                    // We just finished the remaining 452 cycles of line 153. Officially move to line 0.
                     isLine153 = false;
                     LY = 0;
-                    windowYTriggered = false;
+                    windowLineCounter = 0;
+                    windowYTriggered = false; // Reset the latch for the new frame!
                 }
                 else
                 {
@@ -224,24 +225,21 @@ namespace GameboyTest
 
                     if (LY == 144)
                     {
+                        if (IsLcdEnabled()) requestVBlankInterrupt();
                         lock (BufferLock)
                         {
                             Array.Copy(FrameBuffer, DisplayBuffer, FrameBuffer.Length);
                         }
-                        if (IsLcdEnabled()) requestVBlankInterrupt();
                         requestFrameRender();
-
                     }
                     else if (LY == 153)
                     {
-                        isLine153 = true; // Trigger the quirk for the next loop!
-                    }
-
-                    if (LY > 144)
-                    {
-                        windowLineCounter = 0;
+                        isLine153 = true;
                     }
                 }
+
+                // THE TRUE HARDWARE LATCH:
+                // Evaluated purely on coordinates, completely IGNORING LCDC Bit 5!
                 if (LY == WY)
                 {
                     windowYTriggered = true;
@@ -463,16 +461,16 @@ namespace GameboyTest
 
                 // --- OLD CODE ---
                 // if (windowEnabled && LY >= WY && pixel > WX - 1)
-
+                int windowXPos = WX - 7;
                 // --- NEW CODE ---
-                if (windowEnabled && windowYTriggered && pixel > WX - 1)
+                if (windowEnabled && windowYTriggered && pixel > windowXPos -1)
                 {
                     usingWindow = true;
                 }
                 // Are we drawing the window right now?
                 if (usingWindow)
                 {
-                    xPos = pixel - WX;
+                    xPos = pixel - windowXPos;
                     yPos = windowLineCounter;
                     tileMapBase = windowMemory;
 
