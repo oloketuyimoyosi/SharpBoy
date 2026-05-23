@@ -59,6 +59,18 @@ namespace GameboyTest
         private bool ppu_mode_on_off = false;
         private Action requestLcdInterrupt;
         private Action requestVBlankInterrupt;
+        // SkiaSharp reads from this one (The Front Buffer)
+        // Hardware Quirk: The window has its own hidden internal line counter!
+
+
+        // NEW: The Window Y Trigger Latch
+        private bool windowYTriggered = false;
+
+        // The PPU draws to this one secretly (The Back Buffer)
+
+        public uint[] DisplayBuffer { get; private set; } = new uint[160 * 144];
+        // A lock to prevent them from crashing into each other
+        public readonly object BufferLock = new object();
         public uint[] FrameBuffer { get; private set; } = new uint[160 * 144];
         private byte[] oam { get; set; }
         private byte[] vram { get; set; }
@@ -204,6 +216,7 @@ namespace GameboyTest
                     // We just finished the remaining 452 cycles of line 153. Officially move to line 0.
                     isLine153 = false;
                     LY = 0;
+                    windowYTriggered = false;
                 }
                 else
                 {
@@ -211,6 +224,10 @@ namespace GameboyTest
 
                     if (LY == 144)
                     {
+                        lock (BufferLock)
+                        {
+                            Array.Copy(FrameBuffer, DisplayBuffer, FrameBuffer.Length);
+                        }
                         if (IsLcdEnabled()) requestVBlankInterrupt();
                         requestFrameRender();
 
@@ -224,6 +241,10 @@ namespace GameboyTest
                     {
                         windowLineCounter = 0;
                     }
+                }
+                if (LY == WY)
+                {
+                    windowYTriggered = true;
                 }
             }
 
@@ -440,10 +461,13 @@ namespace GameboyTest
                 xPos &= 255;
                 yPos &= 255;
 
-                if (windowEnabled && LY >= WY && pixel > WX - 1)
+                // --- OLD CODE ---
+                // if (windowEnabled && LY >= WY && pixel > WX - 1)
+
+                // --- NEW CODE ---
+                if (windowEnabled && windowYTriggered && pixel > WX - 1)
                 {
                     usingWindow = true;
-                    
                 }
                 // Are we drawing the window right now?
                 if (usingWindow)

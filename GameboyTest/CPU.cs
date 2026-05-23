@@ -97,16 +97,17 @@ namespace GameboyTest
                 bus.DmaTransfer(bus.oam_store);
             }
 
-            int ppuCycles = 4;
+            int hardwareCycles = 4;
             if (GBC_ON && (bus.KEY1 & 0x80) != 0)
             {
-                ppuCycles = 2;
+                hardwareCycles = 2; // Scale down hardware during Double Speed!
             }
 
-            bus.ppu.Tick(ppuCycles, PC, Halted, bus.ieRegister, IME, Interrupt_on_Line);
+            bus.ppu.Tick(hardwareCycles, PC, Halted, bus.ieRegister, IME, Interrupt_on_Line);
 
-            // THE FIX: The APU must tick constantly alongside the PPU!
-            bus.apu.Tick(4);
+            // THE FIX: The APU must use the scaled hardwareCycles, NOT 4!
+            // If this is 4 during Double Speed, it generates 88,200 audio samples per second.
+            bus.apu.Tick(hardwareCycles);
             bus.apu.ProcessAudio();
         }
         private void ResetToPostBootromState(bool isGbc)
@@ -164,13 +165,15 @@ namespace GameboyTest
             // 1. HANDLE HALT STATE
             if (speedSwitchDelay > 0)
             {
-                // 1. Decrement the delay
                 speedSwitchDelay -= 4;
                 TotalClockCycles += 4;
 
-                // 2. The PPU keeps ticking (using 4 cycles, or 2 if in double speed)
-                int ppuCycles = (GBC_ON && (bus.KEY1 & 0x80) != 0) ? 2 : 4;
-                bus.ppu.Tick(ppuCycles, PC, Halted, bus.ieRegister, IME, Interrupt_on_Line);
+                // The CPU is frozen, but the Audio and Video hardware MUST keep running!
+                int hardwareCycles = (GBC_ON && (bus.KEY1 & 0x80) != 0) ? 2 : 4;
+                bus.ppu.Tick(hardwareCycles, PC, Halted, bus.ieRegister, IME, Interrupt_on_Line);
+
+                // Keep the APU alive so it doesn't pop during a speed switch!
+                bus.apu.Tick(hardwareCycles);
 
                 // 3. CRITICAL: Notice how we DO NOT call bus.SystemTimer.Tick(4) here!
                 // This perfectly emulates the hardware quirk where DIV freezes.

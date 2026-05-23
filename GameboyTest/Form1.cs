@@ -626,19 +626,16 @@ namespace GameboyTest
         }
         private void RunEmulatorEngine()
         {
-// The authentic Game Boy refresh rate is 59.73 Hz.
-            // 1000 ms / 59.73 frames = ~16.742 milliseconds per frame.
-            double targetFrameTimeMs = 1000.0 / 59.73;
-            
+            // The authentic Game Boy refresh rate is 59.73 Hz.
+            double baseFrameTimeMs = 1000.0 / 59.73;
             System.Diagnostics.Stopwatch frameTimer = new System.Diagnostics.Stopwatch();
+            frameTimer.Start();
 
             while (isRunning)
             {
-                frameTimer.Restart();
-
                 // 1. DETERMINE TARGET SPEED
                 bool runAsGbc = activeCartridge.ColorMode == GbcMode.CgbSupported || activeCartridge.ColorMode == GbcMode.CgbExclusive;
-                bool isDoubleSpeed = runAsGbc && (bus.KEY1 & 0x80) != 0; 
+                bool isDoubleSpeed = runAsGbc && (bus.KEY1 & 0x80) != 0;
                 int targetCycles = isDoubleSpeed ? CYCLES_PER_FRAME_GBC : CYCLES_PER_FRAME_DMG;
 
                 // 2. EXECUTE EXACTLY ONE FRAME
@@ -651,13 +648,34 @@ namespace GameboyTest
                     cyclesExecuted = cpu.TotalClockCycles - startingCycles;
                 }
 
-                // 3. THE HIGH-RESOLUTION SPEED LIMITER
-                // We use SpinWait instead of Thread.Sleep. This keeps the thread awake and 
-                // perfectly synced to the microsecond, preventing the OS from pausing our emulator.
-                while (frameTimer.Elapsed.TotalMilliseconds < targetFrameTimeMs)
+                // 3. DYNAMIC AUDIO SYNC (With Panic Pre-Buffering)
+                double currentFrameTarget = baseFrameTimeMs;
+                int bufferedAudio = bus.apu.waveProvider.BufferedBytes;
+
+                if (bufferedAudio < 8820)
                 {
-                    System.Threading.Thread.SpinWait(10); 
+                    // CRITICAL STARVATION (Under 3 frames of audio)!
+                    // Burst frames instantly to pre-fill the sound card's buffer!
+                    currentFrameTarget = 0;
                 }
+                else if (bufferedAudio > 44100)
+                {
+                    // Buffer is over 250ms, slow the emulator down slightly
+                    currentFrameTarget += 1.0;
+                }
+                else if (bufferedAudio < 26460)
+                {
+                    // Buffer is under 150ms, speed the emulator up slightly
+                    currentFrameTarget -= 1.0;
+                }
+
+                // 4. THE HIGH-RESOLUTION SPEED LIMITER
+                while (frameTimer.Elapsed.TotalMilliseconds < currentFrameTarget)
+                {
+                    System.Threading.Thread.SpinWait(10);
+                }
+
+                frameTimer.Restart();
             }
         }
         private void OnFrameReadyToDraw()
@@ -682,37 +700,32 @@ namespace GameboyTest
             // Wait until the emulator is fully loaded and running
             if (bus == null || bus.ppu == null || !isRunning) return;
 
-            // 1. PIN THE PPU'S ARRAY IN RAM
-            // This prevents the Garbage Collector from moving the memory while the GPU reads it
-            GCHandle handle = GCHandle.Alloc(bus.ppu.FrameBuffer, GCHandleType.Pinned);
-
-            try
+            // 1. LOCK THE BUFFER SO THE PPU CANNOT OVERWRITE IT WHILE WE DRAW!
+            lock (bus.ppu.BufferLock)
             {
-                IntPtr pointer = handle.AddrOfPinnedObject();
+                // 2. READ FROM THE NEW DisplayBuffer, NOT FrameBuffer!
+                GCHandle handle = GCHandle.Alloc(bus.ppu.DisplayBuffer, GCHandleType.Pinned);
 
-                // 2. TELL SKIA WHAT THE DATA LOOKS LIKE (160x144, 32-bit colors)
-                SKImageInfo info = new SKImageInfo(160, 144, SKColorType.Bgra8888, SKAlphaType.Opaque);
-
-                // 3. WRAP THE RAW POINTER IN A BITMAP
-                using (SKBitmap bitmap = new SKBitmap())
+                try
                 {
-                    bitmap.InstallPixels(info, pointer, info.RowBytes, delegate { }, null);
+                    IntPtr pointer = handle.AddrOfPinnedObject();
+                    SKImageInfo info = new SKImageInfo(160, 144, SKColorType.Bgra8888, SKAlphaType.Opaque);
 
-                    // 4. DRAW IT!
-                    // FilterQuality.None ensures the pixels stay sharp and blocky when scaled
-                    using (SKPaint paint = new SKPaint { FilterQuality = SKFilterQuality.None, IsAntialias = false })
+                    using (SKBitmap bitmap = new SKBitmap())
                     {
-                        // e.Info.Rect is the exact size of your control (480x432).
-                        // Drawing into this rect automatically handles your 3x scaling!
-                        SKRect destinationRect = e.Info.Rect;
-                        canvas.DrawBitmap(bitmap, destinationRect, paint);
+                        bitmap.InstallPixels(info, pointer, info.RowBytes, delegate { }, null);
+
+                        using (SKPaint paint = new SKPaint { FilterQuality = SKFilterQuality.None, IsAntialias = false })
+                        {
+                            SKRect destinationRect = e.Info.Rect;
+                            canvas.DrawBitmap(bitmap, destinationRect, paint);
+                        }
                     }
                 }
-            }
-            finally
-            {
-                // ALWAYS free the handle so C# can manage memory safely again
-                handle.Free();
+                finally
+                {
+                    handle.Free();
+                }
             }
         }
 
