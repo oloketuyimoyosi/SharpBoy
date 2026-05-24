@@ -22,6 +22,11 @@ namespace GameboyTest
 
         // GBC Double Speed executes exactly twice as many cycles per frame
         private const int CYCLES_PER_FRAME_GBC = 140448;
+
+
+        // --- NEW: LCD Mask Caching ---
+        private SKBitmap cachedLcdMask = null;
+        private SKRect lastMaskRect = SKRect.Empty;
         public Form1()
         {
             InitializeComponent();
@@ -708,6 +713,46 @@ namespace GameboyTest
                 skiaControl.Invalidate();
             }
         }
+        private void GenerateLcdMask(SKRect rect, float scaleX, float scaleY)
+        {
+            // Clear out the old mask if the window was resized
+            if (cachedLcdMask != null) cachedLcdMask.Dispose();
+
+            // Create a new blank canvas exactly the size of the screen
+            cachedLcdMask = new SKBitmap((int)rect.Width, (int)rect.Height);
+
+            using (SKCanvas maskCanvas = new SKCanvas(cachedLcdMask))
+            {
+                // Fill it with pure white (White + Multiply Blend Mode = Invisible!)
+                maskCanvas.Clear(SKColors.White);
+
+                // 1. Draw the Grid
+                using (SKPaint gridPaint = new SKPaint { Color = new SKColor(0, 0, 0, 75), StrokeWidth = 1 })
+                {
+                    for (int x = 0; x <= 160; x++)
+                        maskCanvas.DrawLine(x * scaleX, 0, x * scaleX, rect.Height, gridPaint);
+
+                    for (int y = 0; y <= 144; y++)
+                        maskCanvas.DrawLine(0, y * scaleY, rect.Width, y * scaleY, gridPaint);
+                }
+
+                // 2. Draw the Vignette over the grid
+                using (SKPaint vignettePaint = new SKPaint())
+                {
+                    vignettePaint.Shader = SKShader.CreateRadialGradient(
+                        new SKPoint(rect.Width / 2, rect.Height / 2),
+                        Math.Max(rect.Width, rect.Height) / 1.3f,
+                        new SKColor[] { new SKColor(255, 255, 255, 0), new SKColor(0, 0, 0, 90) },
+                        new float[] { 0.4f, 1.0f },
+                        SKShaderTileMode.Clamp);
+
+                    maskCanvas.DrawRect(rect, vignettePaint);
+                }
+            }
+
+            // Remember the size so we don't rebuild it next frame!
+            lastMaskRect = rect;
+        }
         // --- SKIASHARP RENDERING ---
         private void SkiaControl_PaintSurface(object sender, SKPaintSurfaceEventArgs e)
         {
@@ -735,21 +780,21 @@ namespace GameboyTest
                         {
                             if (useLcdFilter)
                             {
-                                // 1. AUTHENTIC TFT COLOR MATRIX (Color Bleed & Desaturation)
-                                // This physically shifts pure sRGB colors into the washed-out GBC spectrum.
+                                // 1. Apply the color bleed and blur directly to the game image
                                 float[] gbcColorMatrix = new float[]
                                 {
-                                    0.75f, 0.15f, 0.05f, 0, 0,  // Red channel bleeds into Green
-                                    0.15f, 0.65f, 0.15f, 0, 0,  // Green channel dominates
-                                    0.05f, 0.15f, 0.65f, 0, 0,  // Blue channel bleeds into Green
-                                    0,     0,     0,     1, 0   // Alpha remains untouched
+                                    0.75f, 0.15f, 0.05f, 0, 0,
+                                    0.15f, 0.65f, 0.15f, 0, 0,
+                                    0.05f, 0.15f, 0.65f, 0, 0,
+                                    0,     0,     0,     1, 0
                                 };
-
                                 paint.ColorFilter = SKColorFilter.CreateColorMatrix(gbcColorMatrix);
-                                paint.ImageFilter = SKImageFilter.CreateBlur(0.4f, 0.4f); // Subtle LCD ghosting
+                                paint.ImageFilter = SKImageFilter.CreateBlur(0.4f, 0.4f);
                             }
 
                             SKRect destinationRect = e.Info.Rect;
+
+                            // Draw the game!
                             canvas.DrawBitmap(bitmap, destinationRect, paint);
 
                             if (useLcdFilter)
@@ -759,39 +804,21 @@ namespace GameboyTest
 
                                 if (scaleX >= 2 && scaleY >= 2)
                                 {
-                                    // 2. THE SHADOW MASK (Multiply Blend Mode)
-                                    // Instead of generic black lines, Multiply mode organically darkens the 
-                                    // exact color beneath it, perfectly mimicking physical crystal gaps.
-                                    using (SKPaint gridPaint = new SKPaint
+                                    // 2. CHECK CACHE: If the window size changed, rebuild the mask
+                                    if (cachedLcdMask == null || lastMaskRect != destinationRect)
                                     {
-                                        Color = new SKColor(0, 0, 0, 75),
-                                        StrokeWidth = 1,
-                                        BlendMode = SKBlendMode.Multiply
-                                    })
-                                    {
-                                        for (int x = 0; x <= 160; x++)
-                                            canvas.DrawLine(x * scaleX, 0, x * scaleX, destinationRect.Height, gridPaint);
-
-                                        for (int y = 0; y <= 144; y++)
-                                            canvas.DrawLine(0, y * scaleY, destinationRect.Width, y * scaleY, gridPaint);
+                                        GenerateLcdMask(destinationRect, scaleX, scaleY);
                                     }
 
-                                    // 3. THE "UNLIT" GLASS VIGNETTE
-                                    // Simulates the natural darkness at the edges of the unlit plastic screen.
-                                    using (SKPaint vignettePaint = new SKPaint())
+                                    // 3. DRAW CACHE: Stamp the pre-rendered mask over the game instantly
+                                    using (SKPaint maskPaint = new SKPaint { BlendMode = SKBlendMode.Multiply })
                                     {
-                                        vignettePaint.Shader = SKShader.CreateRadialGradient(
-                                            new SKPoint(destinationRect.Width / 2, destinationRect.Height / 2),
-                                            Math.Max(destinationRect.Width, destinationRect.Height) / 1.3f,
-                                            new SKColor[] { new SKColor(255, 255, 255, 0), new SKColor(0, 0, 0, 90) },
-                                            new float[] { 0.4f, 1.0f },
-                                            SKShaderTileMode.Clamp);
-
-                                        canvas.DrawRect(destinationRect, vignettePaint);
+                                        canvas.DrawBitmap(cachedLcdMask, destinationRect, maskPaint);
                                     }
                                 }
                             }
                         }
+                    
                     }
                 }
                 finally

@@ -208,6 +208,8 @@ namespace GameboyTest.NewFolder
                     ch1LengthTimer = 64 - (value & 0x3F);
                     break;
                 case 0xFF12:
+                    // ZOMBIE GLITCH: Corrupt volume before saving the new register!
+                    ch1CurrentVolume = CalculateZombieVolume(NR12, value, ch1CurrentVolume, ch1IsPlaying);
                     NR12 = value;
                     if ((NR12 & 0xF8) == 0) ch1IsPlaying = false;
                     break;
@@ -242,6 +244,8 @@ namespace GameboyTest.NewFolder
                     ch2LengthTimer = 64 - (value & 0x3F);
                     break;
                 case 0xFF17:
+                    // ZOMBIE GLITCH: Corrupt volume before saving the new register!
+                    ch2CurrentVolume = CalculateZombieVolume(NR22, value, ch2CurrentVolume, ch2IsPlaying);
                     NR22 = value;
                     if ((NR22 & 0xF8) == 0) ch2IsPlaying = false;
                     break;
@@ -328,6 +332,8 @@ namespace GameboyTest.NewFolder
                     ch4LengthTimer = 64 - (value & 0x3F);
                     break;
                 case 0xFF21:
+                    // ZOMBIE GLITCH: Corrupt volume before saving the new register!
+                    ch4CurrentVolume = CalculateZombieVolume(NR42, value, ch4CurrentVolume, ch4IsPlaying);
                     NR42 = value;
                     if ((NR42 & 0xF8) == 0) ch4IsPlaying = false;
                     break;
@@ -475,7 +481,37 @@ namespace GameboyTest.NewFolder
         // ==========================================
         // ============== MASTER CLOCKS =============
         // ==========================================
+        private int CalculateZombieVolume(byte oldRegister, byte newRegister, int currentVolume, bool isPlaying)
+        {
+            // Zombie Mode ONLY triggers if the channel is currently active!
+            if (!isPlaying) return currentVolume;
 
+            int oldPeriod = oldRegister & 0x07;
+            bool oldIsAddMode = (oldRegister & 0x08) != 0;
+            bool newIsAddMode = (newRegister & 0x08) != 0;
+
+            int zombieVolume = currentVolume;
+
+            // Rule 1: If old envelope was Subtracting
+            if (!oldIsAddMode)
+            {
+                zombieVolume++;
+            }
+            // Rule 2: If old envelope was Adding AND old period was exactly 0
+            else if (oldIsAddMode && oldPeriod == 0)
+            {
+                zombieVolume += 2;
+            }
+
+            // Rule 3: If toggling direction from Subtract to Add
+            if (!oldIsAddMode && newIsAddMode)
+            {
+                zombieVolume++;
+            }
+
+            // Return the 4-bit overflow wrap-around (keeps volume between 0 and 15)
+            return zombieVolume & 0x0F;
+        }
         public void Tick(int cycles)
         {
             for (int i = 0; i < cycles; i += 2)
