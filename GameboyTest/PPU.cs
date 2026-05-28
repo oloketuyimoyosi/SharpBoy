@@ -62,7 +62,7 @@ namespace GameboyTest
         private bool? lcd_on_off = null;
         private bool ly_match_stored = false;
         private bool ly_match = false;
-
+        private int internalSCX = 0;
         // --- PANDOCS PIXEL FIFO TRACKERS ---
         private struct FifoPixel
         {
@@ -168,8 +168,12 @@ namespace GameboyTest
             {
                 bgFifo.Clear();
                 objFifo.Clear();
-                pixelsToDrop = SCX % 8;
-                fetcherScreenX = -(SCX % 8);
+
+                // THE FIX: Latch the SCX value so mid-scanline CPU writes cannot tear the screen!
+                internalSCX = SCX;
+                pixelsToDrop = internalSCX % 8;
+                fetcherScreenX = -(internalSCX % 8);
+
                 fetcherState = 0;
                 fetcherCycle = 0;
                 fetchX = 0;
@@ -177,10 +181,7 @@ namespace GameboyTest
 
                 fetcherStallCycles = 0;
                 BuildLineSprites();
-
-                // TRUE HARDWARE DELAY: No more pre-fetching time machines!
-                // We let the fetcher read SCX organically cycle-by-cycle.
-                mode3DelayCycles = 12;
+                mode3DelayCycles = 0;
             }
             for (int i = 0; i < mode3CyclesToRun; i++)
             {
@@ -206,8 +207,7 @@ namespace GameboyTest
                     LY++;
                     if (LY == 144)
                     {
-                        isFirstFrame = false; // <-- ADD THIS: Warmup frame is over!
-
+                        isFirstFrame = false; 
                         if (IsLcdEnabled()) requestVBlankInterrupt();
                         lock (BufferLock)
                         {
@@ -228,9 +228,6 @@ namespace GameboyTest
             UpdateStatus(PC, halted, ie, IME, Interrupt_on_Line);
         }
 
-        // =========================================================
-        // 2. TRUE PIXEL FIFO & MULTIPLEXER
-        // =========================================================
         // =========================================================
         // 2. TRUE PIXEL FIFO & MULTIPLEXER
         // =========================================================
@@ -369,7 +366,10 @@ namespace GameboyTest
             {
                 case 0:
                     ushort tileMapBase = (ushort)(inWindow ? (((LCDC & 0x40) != 0) ? 0x1C00 : 0x1800) : (((LCDC & 0x08) != 0) ? 0x1C00 : 0x1800));
-                    int mapX = inWindow ? (fetchX & 255) : ((fetchX + (SCX / 8) * 8) & 255);
+
+                    // COARSE SCROLL: Hardware reads the LIVE SCX register for tile fetches!
+                    int mapX = inWindow ? (fetchX ) : ((fetchX + SCX) & 255);
+
                     int mapY = inWindow ? windowLineCounter : ((LY + SCY) & 255);
 
                     ushort mapAddress = (ushort)(tileMapBase + ((mapY / 8) * 32) + (mapX / 8));
@@ -515,8 +515,6 @@ namespace GameboyTest
                 scanlineCounter = SCANLINE_CYCLES;
                 LY = 0;
                 new_mode = 0;
-
-                // FROZEN COMPARATOR (Passes r2 intr): Retains the LYC=LY flag state while unpowered
                 ly_match_condition = (STAT & 0x04) != 0;
             }
             else
@@ -530,17 +528,18 @@ namespace GameboyTest
                 }
             }
 
-            // PROTECT READ-ONLY BITS: Override CPU memory corruption
             int new_status = (STAT & 0xF8) | 0x80;
             new_status |= new_mode;
             if (ly_match_condition) new_status |= 0x04;
             STAT = (byte)new_status;
 
-            // CONTINUOUS OR-GATE EVALUATION (Passes r4 no intr)
             bool mode0_int = (new_mode == 0) && ((new_status & 0x08) != 0);
             bool mode1_int = (new_mode == 1) && ((new_status & 0x10) != 0);
             bool mode2_int = (new_mode == 2) && ((new_status & 0x20) != 0);
             bool lyc_int = ly_match_condition && ((new_status & 0x40) != 0);
+
+            // THE FIX: Let the interrupt fire naturally at the scanline boundary!
+            // Do NOT artificially pull mode2_int high early.
 
             bool new_interrupt_line = mode0_int || mode1_int || mode2_int || lyc_int;
 
@@ -559,7 +558,6 @@ namespace GameboyTest
             stat_interrupt_line = new_interrupt_line;
             current_ppu_mode = new_mode;
         }
-
         private int calculatemode(int scanline_cycles, int current_line, bool lcd_enabled, ushort PC)
         {
             if (!lcd_enabled) return 0;

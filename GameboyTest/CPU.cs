@@ -86,6 +86,7 @@ namespace GameboyTest
 
         // --- THE HEARTBEAT ---
         private bool GBC_ON = false;
+        private bool imeDelay = false;
         private void Tick()
         {
             // Every memory access takes 1 M-Cycle, which is 4 T-Cycles
@@ -162,61 +163,82 @@ namespace GameboyTest
         }*/
         public void Step()
         {
-            // 1. HANDLE HALT STATE
             if (speedSwitchDelay > 0)
             {
                 speedSwitchDelay -= 4;
                 TotalClockCycles += 4;
-
-                // The CPU is frozen, but the Audio and Video hardware MUST keep running!
                 int hardwareCycles = (GBC_ON && (bus.KEY1 & 0x80) != 0) ? 2 : 4;
                 bus.ppu.Tick(hardwareCycles, PC, Halted, bus.ieRegister, IME, Interrupt_on_Line);
-
-                // Keep the APU alive so it doesn't pop during a speed switch!
                 bus.apu.Tick(hardwareCycles);
-
-                // 3. CRITICAL: Notice how we DO NOT call bus.SystemTimer.Tick(4) here!
-                // This perfectly emulates the hardware quirk where DIV freezes.
-
                 if (bus.oam_switch) bus.DmaTransfer(bus.oam_store);
-
-
-                return; // Exit early! Do not fetch or execute opcodes.
+                return;
             }
-            if (Halted)
+
+            // 1. EVALUATE INTERRUPTS FIRST
+            byte ie = bus.ReadByte(0xFFFF);
+            byte iff = bus.ReadByte(0xFF0F);
+            byte pendingInterrupts = (byte)(ie & iff & 0x1F);
+
+            if (pendingInterrupts > 0)
             {
-                // Check if an interrupt is pending (IE & IF)
-                // If any enabled interrupt is pending, wake up!
-                byte ie = bus.ReadByte(0xFFFF);
-                byte iff = bus.ReadByte(0xFF0F);
-                if (((bus.ieRegister & iff) & 0x1F) != 0)
+                if (Halted)
                 {
                     Halted = false;
-                    PC--;
+                    
                 }
-                else
+
+                if (IME)
                 {
-                    // Still halted: Consume 4 T-cycles and exit Step
-                    Tick();
+                    IME = false;
+                    imeDelay = false; // Cancel any pending EI instruction
+
+                    // --- EXACT 5 M-CYCLE (20 T-CYCLE) DISPATCH ---
+                    // Using raw bus.WriteByte ensures we don't accidentally double-Tick 
+                    // if your WriteMemory method has internal Ticks.
+
+                    Tick(); // M-Cycle 1: Idle/Dispatch
+                    Tick(); // M-Cycle 2: Idle/Dispatch
+
+                    SP--;
+                    bus.WriteByte(SP, (byte)(PC >> 8));
+                    Tick(); // M-Cycle 3: Push High PC
+
+                    SP--;
+                    bus.WriteByte(SP, (byte)(PC & 0xFF));
+                    Tick(); // M-Cycle 4: Push Low PC
+
+                    Tick(); // M-Cycle 5: The missing Vector Jump Delay!
+
+                    // Determine the vector
+                    if ((pendingInterrupts & 0x01) != 0) ExecuteInterrupt(0, 0x40);
+                    else if ((pendingInterrupts & 0x02) != 0) ExecuteInterrupt(1, 0x48);
+                    else if ((pendingInterrupts & 0x04) != 0) ExecuteInterrupt(2, 0x50);
+                    else if ((pendingInterrupts & 0x08) != 0) ExecuteInterrupt(3, 0x58);
+                    else if ((pendingInterrupts & 0x10) != 0) ExecuteInterrupt(4, 0x60);
+
+                    // CRITICAL FOR BLARGG: Exit early! Do not fetch an opcode!
                     return;
                 }
             }
 
-            // 2. CHECK INTERRUPTS
-            // This handles the jump to the interrupt vector if IME is set
+            // 2. PROCESS EI DELAY
+            // This guarantees IME becomes true exactly ONE instruction after EI.
+            if (imeDelay)
+            {
+                IME = true;
+                imeDelay = false;
+            }
 
-            
-            // 3. LOGGING (Optional but recommended for your 0x0120 debug)
-            // bus.Logger.LogPC(PC);
+            // 3. PROCESS HALT STATE
+            if (Halted)
+            {
+                Tick();
+                return;
+            }
 
-            // 4. FETCH NEXT OPCODE
+            // 4. FETCH & EXECUTE
             byte opcode = ReadNextByte();
-
-            // 5. EXECUTE
             ExecuteOpcode(opcode);
-
-            CheckInterrupts();
-
         }
         // Simple history tracker
         private List<string> pcHistory = new List<string>();
@@ -291,54 +313,37 @@ namespace GameboyTest
         }
         private void CheckInterrupts()
         {
-            // Use bus.ReadByte() instead of ReadMemory() because checking these 
-            // lines happens instantly internally; it doesn't take extra T-Cycles.
             byte ie = bus.ReadByte(0xFFFF);
             byte iff = bus.ReadByte(0xFF0F);
-
-            // A bitwise AND tells us if any allowed interrupts are currently requesting to fire
-            byte pendingInterrupts = (byte)(ie & iff);
+            byte pendingInterrupts = (byte)(ie & iff & 0x1F);
             
             if (pendingInterrupts > 0)
             {
-                // WAKE UP! If an interrupt is pending, the CPU instantly leaves the Halt state,
-                // even if IME (Interrupt Master Enable) is currently false!
+                bool wasHalted = Halted;
                 Halted = false;
 
-                // However, we only actually JUMP to the interrupt code if the Master switch is ON.
+                // THE CPU WAKEUP PENALTY
+                // Re-engaging the CPU oscillator takes exactly 4 T-cycles!
+                if (wasHalted) Tick(); 
+
                 if (IME)
                 {
-                    // 1. Disable the master switch so we don't get interrupted while handling an interrupt
                     IME = false;
                     Interrupt_on_Line = true;
-                    // 2. The CPU requires 8 T-Cycles of internal delay to prepare for the jump
                     Tick();
                     Tick();
 
-                    // 3. Push the current Program Counter (PC) to the Stack so we can return later
                     SP--;
-                    WriteMemory(SP, (byte)(PC >> 8));   // Push upper byte (Ticks 4)
+                    WriteMemory(SP, (byte)(PC >> 8));
                     SP--;
-                    WriteMemory(SP, (byte)(PC & 0xFF)); // Push lower byte (Ticks 4)
+                    WriteMemory(SP, (byte)(PC & 0xFF));
 
-                    // 4. Figure out exactly WHICH interrupt fired and jump to it!
-                    if ((pendingInterrupts & 0x01) != 0)      // Bit 0: VBlank
-                        ExecuteInterrupt(0, 0x40);
-                    else if ((pendingInterrupts & 0x02) != 0)
-                    { // Bit 1: LCD STAT
-                        ExecuteInterrupt(1, 0x48);
-                        
-                    }
-                    else if ((pendingInterrupts & 0x04) != 0) // Bit 2: Timer
-                        ExecuteInterrupt(2, 0x50);
-                    else if ((pendingInterrupts & 0x08) != 0) // Bit 3: Serial
-                        ExecuteInterrupt(3, 0x58);
-
-                    else if ((pendingInterrupts & 0x10) != 0) // Bit 4: Joypad
-                        ExecuteInterrupt(4, 0x60);
-
+                    if ((pendingInterrupts & 0x01) != 0)      ExecuteInterrupt(0, 0x40);
+                    else if ((pendingInterrupts & 0x02) != 0) ExecuteInterrupt(1, 0x48);
+                    else if ((pendingInterrupts & 0x04) != 0) ExecuteInterrupt(2, 0x50);
+                    else if ((pendingInterrupts & 0x08) != 0) ExecuteInterrupt(3, 0x58);
+                    else if ((pendingInterrupts & 0x10) != 0) ExecuteInterrupt(4, 0x60);
                 }
-                
             }
         }
 
@@ -357,7 +362,7 @@ namespace GameboyTest
             // 3. The final jump takes 4 T-Cycles
 
 
-            Tick();
+            //Tick();
 
             Interrupt_on_Line = false;
 
@@ -1370,8 +1375,9 @@ namespace GameboyTest
                     break;
                 case 0xD9: // RETI (Return and Enable Interrupts)
                     PC = Pop16();
-                    Tick();
+                    
                     IME = true; // Turn the master interrupt switch back on!
+                    Tick();
                     break;
 
                 // --- JUMPS ---
@@ -1537,14 +1543,12 @@ namespace GameboyTest
                 // --- MASTER INTERRUPT SWITCHES ---
                 case 0xF3: // DI (Disable Interrupts)
                     // The CPU will no longer jump to 0x0040, etc., even if hardware requests it
-                    IME = false;
+IME = false;
+                    imeDelay = false; // Cancel pending EI
                     break;
-                case 0xFB: // EI (Enable Interrupts)
-                    // (Note: In pure hardware, this actually enables interrupts AFTER the next 
-                    // instruction runs, but setting it instantly works for 99% of games!)
-                    IME = true;
+                case 0xFB: // EI
+                    imeDelay = true; // DELAYED enable
                     break;
-
                 // --- IMMEDIATE MATH ---
                 case 0xF6: // OR A, d8 (Logical OR with immediate 8-bit value)
                     OrA(ReadNextByte());

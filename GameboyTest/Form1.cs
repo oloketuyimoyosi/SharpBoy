@@ -5,11 +5,14 @@ using SkiaSharp;
 using SkiaSharp.Views.Desktop;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-
+using AForge.Video;
+using AForge.Video.DirectShow;
 namespace GameboyTest
 {
     public partial class Form1 : Form
     {
+        private FilterInfoCollection videoDevices;
+        private VideoCaptureDevice videoSource;
         private SKControl skiaControl;
         private SKBitmap frameBuffer;
         MemoryBus bus;
@@ -23,7 +26,7 @@ namespace GameboyTest
         // GBC Double Speed executes exactly twice as many cycles per frame
         private const int CYCLES_PER_FRAME_GBC = 140448;
 
-
+        public Mbc5Camera gbCameraMapper;
         // --- NEW: LCD Mask Caching ---
         private SKBitmap cachedLcdMask = null;
         private SKRect lastMaskRect = SKRect.Empty;
@@ -234,7 +237,7 @@ namespace GameboyTest
 
                             // ... your MBC routing logic ...
 
-                            
+
                             bool runAsGbc = activeCartridge.ColorMode == GbcMode.CgbSupported || activeCartridge.ColorMode == GbcMode.CgbExclusive;
                             bus = new MemoryBus(activeMbc, OnFrameReadyToDraw);
                             if (runAsGbc)
@@ -247,7 +250,16 @@ namespace GameboyTest
                             cpu = new CPU(bus, runAsGbc);
                             cpu.AF = (ushort)((runAsGbc ? 0x1100 : 0x0100) | (cpu.AF & 0x00FF));
                             APU testApu = new APU();
-                            
+                            if (activeCartridge.HardwareFeature == "Camera")
+                            {
+                                gbCameraMapper = new Mbc5Camera();
+                                bus.AttachCameraMapper(gbCameraMapper);
+                                StartWebcam();
+                            }
+                            else
+                            {
+                                bus.DetachCameraMapper();
+                            }
                             // START THE LOGGER HERE!
                             string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cpu_log.txt");
 
@@ -827,6 +839,51 @@ namespace GameboyTest
                 }
             }
         }
+
+        private void StartWebcam()
+        {
+            // 1. Find available webcams
+            videoDevices = new FilterInfoCollection(FilterCategory.VideoInputDevice);
+
+            if (videoDevices.Count > 0)
+            {
+                // 2. Select the default camera (Index 0)
+                videoSource = new VideoCaptureDevice(videoDevices[0].MonikerString);
+
+                // 3. Subscribe to the frame capture event
+                videoSource.NewFrame += new NewFrameEventHandler(VideoSource_NewFrame);
+
+                // 4. Start the camera
+                videoSource.Start();
+            }
+            else
+            {
+                MessageBox.Show("No webcam detected!");
+            }
+        }
+
+        // This fires automatically every time the webcam takes a picture (e.g., 30 FPS)
+        private void VideoSource_NewFrame(object sender, NewFrameEventArgs eventArgs)
+        {
+            if (gbCameraMapper != null)
+            {
+                // Push the raw frame into our Game Boy Camera mapper!
+                gbCameraMapper.UpdateWebcamFrame(eventArgs.Frame);
+            }
+        }
+
+        // CRITICAL: You must stop the webcam when closing the emulator, 
+        // otherwise it stays on in the background and locks the camera device!
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (videoSource != null && videoSource.IsRunning)
+            {
+                videoSource.SignalToStop();
+                videoSource.WaitForStop();
+            }
+            base.OnFormClosing(e);
+        }
+
 
     }
 }

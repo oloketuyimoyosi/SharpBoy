@@ -7,6 +7,8 @@ namespace GameboyTest
     public class MemoryBus
     {
         private IMbc mbc;
+        private Mbc5Camera mbc5Camera;
+        public bool isCameraRomActive = false;
         public Timer SystemTimer { get; private set; }
         public PPU ppu { get; private set; }
         public APU apu { get; private set; }
@@ -71,11 +73,11 @@ namespace GameboyTest
             // 2. Video RAM
             if (address >= 0x8000 && address <= 0x9FFF)
                 return ppu.ReadVram(address); ;
-
-            // 3. External Cartridge RAM
             if (address >= 0xA000 && address <= 0xBFFF)
+            {
+                if (isCameraRomActive) return mbc5Camera.ReadRam(address);
                 return mbc.Read(address);
-
+            }
             // 4. Working RAM
             if (address >= 0xC000 && address <= 0xDFFF)
             {
@@ -167,6 +169,20 @@ namespace GameboyTest
         public void WriteByte(ushort address, byte value)
         {
             // 1. ROM Space (Bank Switching Commands)
+            if (isCameraRomActive)
+            {
+                if (address >= 0x0000 && address <= 0x7FFF)
+                {
+                    mbc5Camera.HandleBankWrites(address, value);
+                    // CRITICAL FIX: No 'return;' here! 
+                    // The standard MBC below STILL needs to see this write to physically switch the ROM bank!
+                }
+                else if (address >= 0xA000 && address <= 0xBFFF)
+                {
+                    mbc5Camera.WriteRam(address, value);
+                    return; // Exit early! Do not let the standard MBC overwrite the camera image.
+                }
+            }
             if (address <= 0x7FFF)
                 mbc.Write(address, value);
 
@@ -498,7 +514,19 @@ namespace GameboyTest
                 io[0x55] = (byte)(hdmaBlocksRemaining - 1);
             }
         }
+        // --- ADD THIS METHOD INSIDE BUS.CS ---
+        public void AttachCameraMapper(Mbc5Camera cameraMapper)
+        {
+            this.mbc5Camera = cameraMapper;
+            this.isCameraRomActive = true;
+        }
 
+        // Optional but highly recommended: A way to detach it when loading a normal game
+        public void DetachCameraMapper()
+        {
+            this.mbc5Camera = null;
+            this.isCameraRomActive = false;
+        }
         //
     }
 }

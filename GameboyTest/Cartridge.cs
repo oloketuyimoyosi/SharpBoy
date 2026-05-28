@@ -21,7 +21,7 @@ namespace GameboyTest
         //GBC Color Flag (0x0143) is not included in the original Python code, but we can easily add it if needed.
         public GbcMode ColorMode { get; private set; }
 
-        
+
 
         private readonly Dictionary<byte, (string Mbc, string Feature)> MbcTypeMap = new Dictionary<byte, (string, string)>
         {
@@ -32,7 +32,7 @@ namespace GameboyTest
             { 0x05, ("MBC2", "None") },
             { 0x06, ("MBC2", "RAM") },
             { 0x08, ("None", "RAM") },
-            { 0x09, ("None", "Battery-Buffered RAM") }, // Corrected from 0x08 duplicate in original
+            { 0x09, ("None", "Battery-Buffered RAM") },
             { 0x0B, ("MM01", "None") },
             { 0x0C, ("MM01", "RAM") },
             { 0x0D, ("MM01", "Battery-Buffered RAM") },
@@ -43,13 +43,13 @@ namespace GameboyTest
             { 0x13, ("MBC3", "Battery-Buffered RAM") },
             { 0x19, ("MBC5", "None") },
             { 0x1A, ("MBC5", "RAM") },
-            { 0x1B, ("MBC5", "Battery-Buffered RAM") }, // Fixed typo in MBC51
+            { 0x1B, ("MBC5", "Battery-Buffered RAM") },
             { 0x1C, ("MBC5", "Rumble") },
             { 0x1D, ("MBC5", "Rumble+RAM") },
             { 0x1E, ("MBC5", "Battery-Buffered RAM") },
-            { 0x20, ("MBC6", "None") }
+            { 0x20, ("MBC6", "None") },
+            { 0xFC, ("MBC5", "Camera")}
         };
-
         // Standard Game Boy ROM banks are always 16KB (16,384 bytes)
         private readonly Dictionary<byte, int> RomBankCountMap = new Dictionary<byte, int>
         {
@@ -129,6 +129,7 @@ namespace GameboyTest
 
             // Standard GB RAM banks are 8KB (8192 bytes). We calculate how many banks we need.
             TotalRamBanks = totalRamBytes > 0 ? Math.Max(1, totalRamBytes / 8192) : 0;
+
         }
 
         private void SplitRomBanks(byte[] rawFile)
