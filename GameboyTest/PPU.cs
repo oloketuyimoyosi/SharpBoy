@@ -16,6 +16,7 @@ namespace GameboyTest
         public byte LY { get => io[0x44]; set => io[0x44] = value; }
         public byte LYC { get => io[0x45]; set => io[0x45] = value; }
 
+        private int internalSCY = 0; // <-- ADD THIS
         // --- SKIASHARP COLORS (AARRGGBB) ---
         private readonly uint[] Colors = {
             0xFFCADC9F,
@@ -64,6 +65,7 @@ namespace GameboyTest
         private bool ly_match = false;
         private int internalSCX = 0;
         // --- PANDOCS PIXEL FIFO TRACKERS ---
+        private bool scanlineInitialized = false;
         private struct FifoPixel
         {
             public int ColorNum;
@@ -98,6 +100,7 @@ namespace GameboyTest
             public int Y, X, Tile, Attributes, OamIndex;
         }
 
+        private bool scanlineLatched = false; // <-- ADD THIS
         public byte SCY { get => io[0x42]; set => io[0x42] = value; }
         public byte SCX { get => io[0x43]; set => io[0x43] = value; }
         public byte WY { get => io[0x4A]; set => io[0x4A] = value; }
@@ -136,10 +139,9 @@ namespace GameboyTest
                 scanlineCounter = SCANLINE_CYCLES;
                 LY = 0;
                 pixelsPushedThisLine = 0;
+                scanlineInitialized = false; // <-- ADD THIS
                 UpdateStatus(PC, halted, ie, IME, Interrupt_on_Line);
-
-                isFirstFrame = true; // <-- ADD THIS
-
+                isFirstFrame = true;
                 return;
             }
 
@@ -148,6 +150,7 @@ namespace GameboyTest
             if (isLine153 && scanlineCounter <= (SCANLINE_CYCLES - 4))
             {
                 LY = 0;
+                scanlineLatched = false; // <-- RESET HERE
             }
 
             int current_mode = STAT & 0x03;
@@ -164,24 +167,45 @@ namespace GameboyTest
                 mode3CyclesToRun = mode3StartCycle - scanlineCounter;
             }
 
-            if (current_mode == 2 && next_mode == 3)
+
+            if (next_mode == 3)
             {
-                bgFifo.Clear();
-                objFifo.Clear();
+                // THE LATCH: This will only ever run ONCE per scanline!
+                // It is completely immune to the CPU messing with the STAT register.
+                if (!scanlineInitialized)
+                {
+                    scanlineInitialized = true;
 
-                // THE FIX: Latch the SCX value so mid-scanline CPU writes cannot tear the screen!
-                internalSCX = SCX;
-                pixelsToDrop = internalSCX % 8;
-                fetcherScreenX = -(internalSCX % 8);
+                    bgFifo.Clear();
+                    objFifo.Clear();
 
-                fetcherState = 0;
-                fetcherCycle = 0;
-                fetchX = 0;
-                inWindow = false;
+                    internalSCX = SCX;
+                    internalSCY = SCY;
 
-                fetcherStallCycles = 0;
-                BuildLineSprites();
-                mode3DelayCycles = 0;
+                    pixelsToDrop = internalSCX % 8;
+                    fetcherScreenX = -(internalSCX % 8);
+
+                    fetcherState = 0;
+                    fetcherCycle = 0;
+                    fetchX = 0;
+                    inWindow = false;
+
+                    fetcherStallCycles = 0;
+                    BuildLineSprites();
+                    mode3DelayCycles = 0;
+                }
+
+                // Smoothly run the cycles whether it just started or is already running
+                if (current_mode == 3)
+                {
+                    mode3CyclesToRun = cycles;
+                }
+                else
+                {
+                    int mode3StartCycle = SCANLINE_CYCLES - 80;
+                    mode3CyclesToRun = mode3StartCycle - scanlineCounter;
+                    if (mode3CyclesToRun < 0) mode3CyclesToRun = cycles;
+                }
             }
             for (int i = 0; i < mode3CyclesToRun; i++)
             {
@@ -194,6 +218,7 @@ namespace GameboyTest
 
                 scanlineCounter += SCANLINE_CYCLES;
                 pixelsPushedThisLine = 0;
+                scanlineInitialized = false; // <-- CRITICAL FIX: Unlock for the new line!
 
                 if (isLine153)
                 {
@@ -349,6 +374,7 @@ namespace GameboyTest
                 if (LY >= yPos && LY < (yPos + spriteHeight))
                 {
                     lineSprites.Add(new SpriteData { Y = yPos, X = OAM[i + 1] - 8, Tile = OAM[i + 2], Attributes = OAM[i + 3], OamIndex = i });
+                    if (lineSprites.Count == 10) break;
                 }
             }
 
@@ -367,10 +393,9 @@ namespace GameboyTest
                 case 0:
                     ushort tileMapBase = (ushort)(inWindow ? (((LCDC & 0x40) != 0) ? 0x1C00 : 0x1800) : (((LCDC & 0x08) != 0) ? 0x1C00 : 0x1800));
 
-                    // COARSE SCROLL: Hardware reads the LIVE SCX register for tile fetches!
-                    int mapX = inWindow ? (fetchX ) : ((fetchX + SCX) & 255);
-
-                    int mapY = inWindow ? windowLineCounter : ((LY + SCY) & 255);
+                    // USE LATCHED SCROLLING
+                    int mapX = inWindow ? (fetchX) : ((fetchX + internalSCX) & 255);
+                    int mapY = inWindow ? windowLineCounter : ((LY + internalSCY) & 255);
 
                     ushort mapAddress = (ushort)(tileMapBase + ((mapY / 8) * 32) + (mapX / 8));
                     fetchTileNo = VRAM[mapAddress];
@@ -387,7 +412,8 @@ namespace GameboyTest
                     int vramBankOffset = (IsGbc && (fetchAttributes & 0x08) != 0) ? 0x2000 : 0x0000;
                     bool yFlip = IsGbc && (fetchAttributes & 0x40) != 0;
 
-                    int lineY = inWindow ? windowLineCounter : (LY + SCY);
+                    // USE LATCHED SCY
+                    int lineY = inWindow ? windowLineCounter : (LY + internalSCY);
                     int lineInTile = lineY & 7;
                     if (yFlip) lineInTile = 7 - lineInTile;
 
@@ -404,7 +430,8 @@ namespace GameboyTest
                     int vramBankOffset2 = (IsGbc && (fetchAttributes & 0x08) != 0) ? 0x2000 : 0x0000;
                     bool yFlip2 = IsGbc && (fetchAttributes & 0x40) != 0;
 
-                    int lineY2 = inWindow ? windowLineCounter : (LY + SCY);
+                    // USE LATCHED SCY
+                    int lineY2 = inWindow ? windowLineCounter : (LY + internalSCY);
                     int lineInTile2 = lineY2 & 7;
                     if (yFlip2) lineInTile2 = 7 - lineInTile2;
 
@@ -460,21 +487,38 @@ namespace GameboyTest
                 spritesHit++;
 
                 int line = LY - sprite.Y;
+
+                // 1. THE FIX: Clamp the line to prevent mid-scanline register tearing!
+                line = Math.Clamp(line, 0, spriteHeight - 1);
+
                 if ((sprite.Attributes & 0x40) != 0) line = (spriteHeight - 1) - line;
 
                 int tileLocation = sprite.Tile;
                 if (use8x16) tileLocation &= 0xFE;
 
                 int vramBankOffset = (IsGbc && (sprite.Attributes & 0x08) != 0) ? 0x2000 : 0x0000;
-                ushort dataAddress = (ushort)((tileLocation * 16) + (line * 2) + vramBankOffset);
+
+                // 2. THE FIX: Mask the final address with 0x3FFF so it can NEVER exceed VRAM capacity
+                ushort dataAddress = (ushort)(((tileLocation * 16) + (line * 2) + vramBankOffset) & 0x3FFF);
 
                 byte data1 = VRAM[dataAddress];
+                // Safe to add +1 here because 0x3FFF max masked is 0x3FFE.
                 byte data2 = VRAM[dataAddress + 1];
 
                 for (int i = 0; i < 8; i++)
                 {
+                    // ... (Keep your existing working screenX loop below!)
                     int pixelScreenX = startScreenX + i;
+                    int screenX = startScreenX + i;
 
+                    // THE FIX: Do not attempt to calculate sprite pixels 
+                    // if the coordinate is off the physical screen!
+                    if (screenX < 0 || screenX >= 160)
+                    {
+                        // Leave this chunk pixel transparent/empty.
+                        // The fetcher will naturally drop it anyway.
+                        continue;
+                    }
                     if (pixelScreenX >= sprite.X && pixelScreenX < sprite.X + 8)
                     {
                         int tilePixel = pixelScreenX - sprite.X;
@@ -574,14 +618,7 @@ namespace GameboyTest
 
             return 0;
         }
-        private int updateStatus(int status, int mode)
-        {
-            status = (status & 0xFC) | (mode);
-            if (ly_match) status |= 0x4;
-            else status &= 0xFB;
-            return status;
-        }
-
+        
         public byte ReadBgPaletteData() => CgbBgPaletteRam[BCPS & 0x3F];
         public void WriteBgPaletteData(byte value)
         {

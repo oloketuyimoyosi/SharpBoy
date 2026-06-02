@@ -119,6 +119,7 @@ namespace GameboyTest
                 return oam_store;
             }
             if (address == 0xFF00) { return joypad.ReadRegister(); }
+
             // 8. I/O Registers (Joypad, Timers, Audio, LCD)
             if (address == 0xFF07) {return  ((byte)((SystemTimer.TAC)|(0xf8))); }
 
@@ -257,6 +258,29 @@ namespace GameboyTest
 
                     return; 
             }
+            else if (address == 0xFF01) // SB - Serial Transfer Data
+            {
+                io[0x01] = value;
+            }
+            else if (address == 0xFF02) // SC - Serial Transfer Control
+            {
+                io[0x02] = value;
+
+                // Bit 7 (0x80) is Transfer Start. Bit 0 (0x01) is Internal Clock.
+                // We only process it if the game is driving the clock itself!
+                if ((value & 0x81) == 0x81)
+                {
+                    // 1. Shift in all 1s (Simulates an empty, unconnected link cable port)
+                    io[0x01] = 0xFF;
+
+                    // 2. The hardware automatically clears Bit 7 when the transfer finishes
+                    io[0x02] &= 0x7F;
+
+                    // 3. Fire the Serial Interrupt to wake the game up!
+                    RequestInterrupt(InterruptType.Serial);
+                }
+            }
+            // -------------
             if (address == 0xFF07) {SystemTimer.TAC= value; return; }
             if (address == 0xFF05) { SystemTimer.TIMA = value; io[0x5] = value; return; }
             if (address == 0xFF06) { SystemTimer.TMA = value; return; }
@@ -267,7 +291,14 @@ namespace GameboyTest
                 
                 oam_store = value;
             }
-
+            // --- ADD THE STAT PROTECTOR HERE ---
+            else if (address == 0xFF41)
+            {
+                // Bits 0-2 (Mode/LYC) and Bit 7 are read-only! 
+                // Only allow the CPU to overwrite bits 3-6 (Interrupt Enables).
+                io[0x41] = (byte)((io[0x41] & 0x87) | (value & 0x78));
+            }
+            // -----------------------------------
             if (address == 0xFF68) ppu.BCPS = value;
             if (address == 0xFF69) ppu.WriteBgPaletteData(value); // BCPD
             if (address == 0xFF6A) ppu.OCPS = value;
@@ -287,14 +318,17 @@ namespace GameboyTest
             else if (address == 0xFF18) apu.NR23 = value;
             else if (address == 0xFF19) apu.NR24 = value;
             else if (address == 0xFF55) WriteHdma5(value);
+            else if (address == 0xFF44) // LY Register Protector
+            {
+                // LY (Current Scanline) is 100% Read-Only! 
+                // The CPU cannot overwrite the screen's physical drawing position.
+                return;
+            }
             else if (address >= 0xFF00 && address <= 0xFF7F)
             {
                 // NOTE: Similar to reading, you will intercept specific writes here later.
                 // Example: Writing to 0xFF46 triggers a DMA transfer to copy sprite data.
-                if (io[0xF] == 228 && (value == 0) && address == 0xFF0F)
-                {
-                    throw new Exception($"{value}");
-                }
+
                 io[address - 0xFF00] = value;
 
             }
